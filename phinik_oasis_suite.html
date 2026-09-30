@@ -1,0 +1,1862 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Phinik Oasis — Operations Suite</title>
+<!--
+  PHINIK OASIS · OPERATIONS SUITE (Prototype)
+  ------------------------------------------------------------
+  Scope: EMS (staff), PMS (procurement), Kitchen Intelligence
+  (recipe costing + waste) and CRM (private feedback + WhatsApp).
+  Billing / POS is intentionally NOT handled — Petpooja owns it.
+
+  Architecture (single file, framework-free build):
+   • Tailwind CSS 2 (CDN)    → styling
+   • Alpine.js 3 (CDN)        → reactive state & views
+   • Storage adapter          → window.storage (artifact env) with
+                                in-memory fallback. Swap `Store`
+                                for localStorage or a Laravel API
+                                when self-hosting.
+  Sections of the script below:
+   1. Utilities & constants
+   2. Seed / mock data generator
+   3. Alpine component: app()
+      3a. Session & RBAC     3b. EMS     3c. PMS
+      3d. Kitchen            3e. CRM     3f. Dashboard & helpers
+-->
+<link href="https://cdnjs.cloudflare.com/ajax/libs/tailwindcss/2.2.19/tailwind.min.css" rel="stylesheet">
+<style>
+  [x-cloak]{display:none!important}
+  :root{--brand:#0f766e;--brand-d:#115e59;--brand-l:#e6f6f4;--gold:#d97706;--gold-l:#fef3c7}
+  body{font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;-webkit-font-smoothing:antialiased}
+  .bg-brand{background:var(--brand)}.bg-brand-d{background:var(--brand-d)}.bg-brand-l{background:var(--brand-l)}
+  .text-brand{color:var(--brand)}.border-brand{border-color:var(--brand)}.bg-gold{background:var(--gold)}.bg-gold-l{background:var(--gold-l)}.text-gold{color:var(--gold)}
+  .sidebar{background:linear-gradient(180deg,#0b3b38 0%,#0c2629 100%)}
+  .hero{background:linear-gradient(135deg,#0f766e 0%,#115e59 55%,#134e4a 100%)}
+  .card{background:#fff;border:1px solid #e5e7eb;border-radius:14px;box-shadow:0 1px 2px rgba(16,24,40,.04)}
+  .input{width:100%;border:1px solid #d1d5db;border-radius:10px;padding:.55rem .75rem;background:#fff;font-size:.9rem;outline:none;transition:.15s}
+  .input:focus{border-color:var(--brand);box-shadow:0 0 0 3px rgba(15,118,110,.15)}
+  .label{display:block;font-size:.68rem;font-weight:700;color:#6b7280;margin-bottom:.3rem;text-transform:uppercase;letter-spacing:.05em}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;border-radius:10px;padding:.55rem 1rem;font-weight:600;font-size:.875rem;transition:.15s;white-space:nowrap;cursor:pointer}
+  .btn:disabled{opacity:.5;cursor:not-allowed}
+  .btn-primary{background:var(--brand);color:#fff}.btn-primary:hover{background:var(--brand-d)}
+  .btn-ghost{background:#fff;border:1px solid #d1d5db;color:#374151}.btn-ghost:hover{background:#f9fafb}
+  .btn-danger{background:#fee2e2;color:#b91c1c}.btn-danger:hover{background:#fecaca}
+  .btn-sm{padding:.3rem .65rem;font-size:.75rem;border-radius:8px}
+  .badge{display:inline-flex;align-items:center;gap:.25rem;padding:.12rem .55rem;border-radius:999px;font-size:.7rem;font-weight:600;white-space:nowrap}
+  .tbl{width:100%;font-size:.85rem}
+  .tbl th{font-size:.68rem;text-transform:uppercase;letter-spacing:.05em;color:#6b7280;font-weight:700;text-align:left;padding:.7rem .9rem;background:#f9fafb;white-space:nowrap}
+  .tbl td{padding:.65rem .9rem;border-top:1px solid #f1f5f9;vertical-align:middle}
+  .tbl tbody tr:hover{background:#fafafa}
+  .fade-in{animation:fade .25s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .nav-link{display:flex;align-items:center;gap:.65rem;padding:.5rem .75rem;border-radius:10px;font-size:.875rem;color:rgba(255,255,255,.75);transition:.15s;width:100%;text-align:left}
+  .nav-link:hover{background:rgba(255,255,255,.08);color:#fff}
+  .nav-link.active{background:rgba(255,255,255,.14);color:#fff;font-weight:600}
+  .nav-link.locked{opacity:.38}
+  .scroll-thin::-webkit-scrollbar{width:6px;height:6px}.scroll-thin::-webkit-scrollbar-thumb{background:rgba(0,0,0,.2);border-radius:6px}
+  .phone{border:10px solid #111827;border-radius:38px;box-shadow:0 25px 50px -12px rgba(0,0,0,.35);overflow:hidden;background:#fff}
+  .wa-bg{background-color:#efe7dd;background-image:radial-gradient(rgba(0,0,0,.035) 1px,transparent 1px);background-size:14px 14px}
+  .wa-bubble{background:#d9fdd3;border-radius:10px 0 10px 10px;box-shadow:0 1px .5px rgba(0,0,0,.13);white-space:pre-wrap;word-break:break-word}
+  .star{font-size:2rem;line-height:1;cursor:pointer;transition:transform .1s}.star:active{transform:scale(1.2)}
+  .shift-cell{min-width:3.6rem}
+  .pulse-dot{animation:pulse 1.6s infinite}@keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+</style>
+</head>
+<body class="bg-gray-100 text-gray-800">
+<div x-data="app()" x-cloak class="flex h-screen overflow-hidden">
+
+  <!-- ============ MOBILE BACKDROP ============ -->
+  <div x-show="sidebarOpen" @click="sidebarOpen=false" class="fixed inset-0 bg-black bg-opacity-40 z-30 md:hidden"></div>
+
+  <!-- ============ SIDEBAR ============ -->
+  <aside :class="sidebarOpen?'translate-x-0':'-translate-x-full'" class="sidebar fixed inset-y-0 left-0 z-40 w-64 transform transition-transform duration-200 md:translate-x-0 md:static md:flex-shrink-0 flex flex-col text-white">
+    <div class="px-5 py-5 flex items-center gap-3 border-b border-white border-opacity-10">
+      <div class="w-10 h-10 rounded-xl bg-gold flex items-center justify-center font-black text-lg text-white shadow">P</div>
+      <div>
+        <div class="font-bold tracking-wide">Phinik Oasis</div>
+        <div class="text-xs text-white text-opacity-60">Operations Suite</div>
+      </div>
+      <button class="ml-auto md:hidden text-white text-opacity-70" @click="sidebarOpen=false">✕</button>
+    </div>
+    <nav class="flex-1 overflow-y-auto scroll-thin px-3 py-4 space-y-5">
+      <template x-for="g in navGroups" :key="g.name">
+        <div>
+          <div class="px-3 mb-1 text-xs font-bold uppercase tracking-wider text-white text-opacity-40" x-text="g.name"></div>
+          <template x-for="n in g.items" :key="n.id">
+            <button @click="go(n.id)" class="nav-link" :class="{'active':view===n.id,'locked':!can(n.id)}">
+              <span x-html="ico(n.icon)"></span>
+              <span class="flex-1" x-text="n.label"></span>
+              <span x-show="!can(n.id)" class="text-xs">🔒</span>
+              <span x-show="n.id==='feedback' && can(n.id) && fbCount('new')>0" class="badge bg-red-500 text-white" x-text="fbCount('new')"></span>
+            </button>
+          </template>
+        </div>
+      </template>
+    </nav>
+    <div class="p-4 border-t border-white border-opacity-10 space-y-3 text-xs">
+      <div class="rounded-lg bg-white bg-opacity-10 p-3 leading-relaxed">
+        <div class="font-semibold text-white">Billing → Petpooja</div>
+        <div class="text-white text-opacity-60">This suite never creates bills or touches POS data.</div>
+      </div>
+      <div class="flex items-center justify-between text-white text-opacity-60">
+        <span x-text="persistOk?'● Auto-saved':'● Session only'" :class="persistOk?'text-green-300':'text-yellow-300'"></span>
+        <button @click="resetDemo()" class="underline hover:text-white" x-text="resetArmed?'Click again to confirm':'Reset demo data'"></button>
+      </div>
+    </div>
+  </aside>
+
+  <!-- ============ MAIN COLUMN ============ -->
+  <div class="flex-1 flex flex-col min-w-0">
+    <!-- Top bar with RBAC switcher -->
+    <header class="bg-white border-b border-gray-200 z-20">
+      <div class="flex items-center gap-3 px-4 md:px-6 py-3">
+        <button class="md:hidden p-2 -ml-2 rounded-lg hover:bg-gray-100" @click="sidebarOpen=true" aria-label="Open menu">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+        <div class="min-w-0">
+          <h1 class="text-lg font-bold truncate" x-text="currentNav.label"></h1>
+          <p class="text-xs text-gray-500 hidden sm:block" x-text="dateLabel"></p>
+        </div>
+        <div class="ml-auto flex items-center gap-2">
+          <div class="hidden sm:flex bg-gray-100 rounded-lg p-1 text-sm">
+            <template x-for="r in ['admin','manager','staff']" :key="r">
+              <button @click="quickRole(r)" class="px-3 py-1 rounded-md transition" :class="session.role===r?'bg-white shadow text-brand font-semibold':'text-gray-600 hover:text-gray-900'" x-text="{admin:'Owner',manager:'Manager',staff:'Staff'}[r]"></button>
+            </template>
+          </div>
+          <select class="input py-1 text-sm" style="width:12.5rem" @change="setRole($event.target.value)" aria-label="Switch user">
+            <optgroup label="Owner / Admin"><option value="admin" :selected="roleKey==='admin'">Pawan — Owner</option></optgroup>
+            <optgroup label="Manager"><option value="manager:s1" :selected="roleKey==='manager:s1'">Rohit Sharma — Manager</option></optgroup>
+            <optgroup label="Staff">
+              <template x-for="s in db.staff.filter(x=>x.role!=='Manager' && x.active)" :key="s.id">
+                <option :value="'staff:'+s.id" :selected="roleKey==='staff:'+s.id" x-text="s.name+' — '+(s.title||s.role)"></option>
+              </template>
+            </optgroup>
+          </select>
+          <div class="hidden sm:flex w-9 h-9 rounded-full items-center justify-center text-white text-sm font-bold" :class="{'bg-gold':isAdmin,'bg-purple-600':isManager,'bg-blue-600':isStaff}" x-text="initials(userName)"></div>
+        </div>
+      </div>
+      <div class="px-4 md:px-6 py-1.5 text-xs flex items-center gap-2 border-t" :class="{'bg-gold-l text-yellow-900':isAdmin,'bg-purple-50 text-purple-900':isManager,'bg-blue-50 text-blue-900':isStaff}">
+        <span class="font-bold" x-text="'Viewing as '+userName+' · '+roleLabel"></span>
+        <span class="hidden md:inline opacity-75" x-text="'— '+roleBlurb"></span>
+      </div>
+    </header>
+
+    <main x-ref="main" class="flex-1 overflow-y-auto scroll-thin pb-24 md:pb-10">
+      <div class="p-4 md:p-6 max-w-7xl mx-auto">
+
+<!-- =====================================================================
+     ACCESS GUARD
+===================================================================== -->
+<template x-if="!can(view)">
+  <div class="card p-10 text-center fade-in">
+    <div class="text-4xl mb-2">🔒</div>
+    <h2 class="text-xl font-bold">Restricted module</h2>
+    <p class="text-gray-500 mt-1">Your role doesn't have access to this area.</p>
+    <button class="btn btn-primary mt-4" @click="go('dashboard')">Back to dashboard</button>
+  </div>
+</template>
+
+<!-- =====================================================================
+     DASHBOARD — Owner / Manager
+===================================================================== -->
+<template x-if="view==='dashboard' && !isStaff">
+<div class="space-y-6 fade-in">
+  <div class="flex flex-wrap items-end justify-between gap-3">
+    <div>
+      <h2 class="text-2xl font-bold"><span x-text="greet"></span>, <span x-text="userName.split(' ')[0]"></span></h2>
+      <p class="text-gray-500 text-sm">Operations snapshot for Phinik Oasis · sales & billing live in Petpooja</p>
+    </div>
+    <div class="flex gap-2">
+      <button class="btn btn-ghost btn-sm" @click="go('purchases')">+ Log purchase</button>
+      <button class="btn btn-ghost btn-sm" @click="go('waste')">+ Log waste</button>
+      <button class="btn btn-primary btn-sm" @click="go('rota')">Open rota</button>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-2 lg:grid-cols-5 gap-3">
+    <template x-for="k in kpis" :key="k.label">
+      <div class="card p-4">
+        <p class="text-xs uppercase tracking-wide text-gray-500 font-semibold" x-text="k.label"></p>
+        <p class="text-2xl font-bold mt-1" :class="k.cls||''" x-text="k.value"></p>
+        <p class="text-xs text-gray-500 mt-1" x-text="k.sub"></p>
+      </div>
+    </template>
+  </div>
+
+  <div class="grid lg:grid-cols-3 gap-4">
+    <!-- Admin: weekly spend chart -->
+    <div x-show="isAdmin" class="card p-5 lg:col-span-2">
+      <div class="flex items-center justify-between mb-4">
+        <h3 class="font-bold">Procurement spend · last 4 weeks</h3>
+        <span class="text-xs text-gray-500">Owner-only financial summary</span>
+      </div>
+      <div class="flex items-end gap-4 h-48">
+        <template x-for="(w,i) in weeklySpend" :key="i">
+          <div class="flex-1 flex flex-col items-center justify-end h-full">
+            <span class="text-xs font-bold mb-1" x-text="inrK(w.total)"></span>
+            <div class="w-full flex flex-col-reverse rounded-t-lg overflow-hidden" :style="`height:${w.total/maxWeekSpend*82}%`">
+              <template x-for="c in cats" :key="c">
+                <div :style="`height:${w.total?(w.byCat[c]||0)/w.total*100:0}%;background:${catColor[c]}`" :title="c+': '+inr(w.byCat[c]||0)"></div>
+              </template>
+            </div>
+            <span class="text-xs text-gray-500 mt-2" x-text="w.label"></span>
+          </div>
+        </template>
+      </div>
+      <div class="flex flex-wrap gap-3 mt-4 text-xs">
+        <template x-for="c in cats" :key="c"><span class="flex items-center gap-1"><span class="w-3 h-3 rounded-sm inline-block" :style="`background:${catColor[c]}`"></span><span x-text="c"></span></span></template>
+      </div>
+    </div>
+
+    <!-- Manager: on shift today (wide) / Admin: small -->
+    <div class="card p-5" :class="isManager?'lg:col-span-2':''">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-bold">On shift today</h3>
+        <button class="text-xs text-brand font-semibold" @click="go('attendance')">Attendance →</button>
+      </div>
+      <div class="divide-y">
+        <template x-for="s in scheduledToday" :key="s.id">
+          <div class="flex items-center gap-3 py-2">
+            <div class="w-8 h-8 rounded-full bg-gray-100 flex items-center justify-center text-xs font-bold" x-text="initials(s.name)"></div>
+            <div class="flex-1 min-w-0"><div class="text-sm font-medium truncate" x-text="s.name"></div><div class="text-xs text-gray-500" x-text="SHIFTS[shiftOf(today,s.id)].label+' · '+SHIFTS[shiftOf(today,s.id)].start+'–'+SHIFTS[shiftOf(today,s.id)].end"></div></div>
+            <span class="badge" :class="{'bg-green-100 text-green-800':attStatus(s.id).k==='on','bg-gray-100 text-gray-600':attStatus(s.id).k==='off','bg-blue-100 text-blue-800':attStatus(s.id).k==='done'}" x-text="attStatus(s.id).short"></span>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- Inflation alerts -->
+    <div class="card p-5">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-bold">Price alerts <span class="text-xs font-normal text-gray-500">(&gt;5% week-on-week)</span></h3>
+        <button class="text-xs text-brand font-semibold" @click="go('prices')">Tracker →</button>
+      </div>
+      <template x-if="!inflationAlerts.length"><p class="text-sm text-gray-500">No significant price rises this week. 🎉</p></template>
+      <div class="space-y-2">
+        <template x-for="r in inflationAlerts.slice(0,5)" :key="r.it.name">
+          <div class="flex items-center justify-between text-sm">
+            <span><span class="font-medium" x-text="r.it.name"></span> <span class="text-gray-400 text-xs" x-text="inr2(r.latest)+'/'+r.it.unit"></span></span>
+            <span class="badge bg-red-100 text-red-700" x-text="'▲ '+r.wow.toFixed(1)+'%'"></span>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- Waste by reason -->
+    <div class="card p-5">
+      <h3 class="font-bold mb-3">Waste by reason · 7 days</h3>
+      <div class="space-y-3">
+        <template x-for="w in wasteByReason" :key="w.reason">
+          <div>
+            <div class="flex justify-between text-xs mb-1"><span class="font-medium" x-text="w.reason+' ('+w.n+')'"></span><span x-text="inr(w.cost)"></span></div>
+            <div class="h-2 rounded-full bg-gray-100"><div class="h-2 rounded-full bg-red-400" :style="`width:${w.pct}%`"></div></div>
+          </div>
+        </template>
+      </div>
+    </div>
+
+    <!-- Latest feedback -->
+    <div class="card p-5">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-bold">Latest private feedback</h3>
+        <button class="text-xs text-brand font-semibold" @click="go('feedback')">Inbox →</button>
+      </div>
+      <div class="space-y-3">
+        <template x-for="f in sortedFeedback.slice(0,4)" :key="f.id">
+          <button class="w-full text-left" @click="fb.sel=f.id; go('feedback')">
+            <div class="flex items-center justify-between"><span class="text-yellow-500 text-sm" x-text="stars(f.rating)"></span><span class="badge" :class="statusCls(f.status)" x-text="statusLabel(f.status)"></span></div>
+            <p class="text-sm text-gray-700 truncate" x-text="f.message"></p>
+            <p class="text-xs text-gray-400" x-text="f.table+' · '+fmtDate(f.date)+' · '+(f.name||'Anonymous')"></p>
+          </button>
+        </template>
+      </div>
+    </div>
+
+    <!-- Activity log (Admin) -->
+    <div x-show="isAdmin" class="card p-5">
+      <h3 class="font-bold mb-3">Activity log</h3>
+      <div class="space-y-2 max-h-64 overflow-y-auto scroll-thin">
+        <template x-for="(a,i) in db.activity.slice(0,20)" :key="i">
+          <div class="text-xs"><span class="text-gray-400" x-text="a.at"></span> · <span class="font-semibold" x-text="a.who"></span> <span class="text-gray-600" x-text="a.text"></span></div>
+        </template>
+      </div>
+    </div>
+  </div>
+</div>
+</template>
+
+<!-- =====================================================================
+     DASHBOARD — Staff "My Day" (mobile-first)
+===================================================================== -->
+<template x-if="view==='dashboard' && isStaff && me">
+<div class="max-w-xl mx-auto space-y-4 fade-in">
+  <div class="hero rounded-2xl p-5 text-white shadow-lg">
+    <p class="text-sm text-white text-opacity-75" x-text="greet+','"></p>
+    <h2 class="text-2xl font-bold" x-text="me.name"></h2>
+    <p class="text-sm text-white text-opacity-75" x-text="(me.title||me.role)+' · '+dateLabel"></p>
+    <div class="mt-4 bg-white bg-opacity-10 rounded-xl p-3 flex items-center justify-between">
+      <div>
+        <div class="text-xs uppercase tracking-wide text-white text-opacity-60">Today's shift</div>
+        <div class="font-bold text-lg" x-text="shiftOf(today,me.id)?SHIFTS[shiftOf(today,me.id)].label+' · '+SHIFTS[shiftOf(today,me.id)].start+'–'+SHIFTS[shiftOf(today,me.id)].end:'Day off 🌿'"></div>
+      </div>
+      <div class="text-right"><div class="text-xs text-white text-opacity-60">Now</div><div class="font-mono text-lg" x-text="clock"></div></div>
+    </div>
+  </div>
+
+  <button @click="openRecord(me.id)?checkOut(me.id):checkIn(me.id)" class="w-full text-white rounded-2xl py-6 shadow-lg transition transform hover:scale-105" :class="openRecord(me.id)?'bg-red-600':'bg-brand'">
+    <span class="block text-2xl font-bold" x-text="openRecord(me.id)?'Check Out':'Check In'"></span>
+    <span class="block text-sm opacity-80" x-text="attStatus(me.id).t"></span>
+  </button>
+
+  <div class="grid grid-cols-3 gap-3">
+    <div class="card p-3 text-center"><div class="text-xl font-bold" x-text="hoursRange(me.id,ymd(weekStart(now)),today).toFixed(1)"></div><div class="text-xs text-gray-500">hours this week</div></div>
+    <div class="card p-3 text-center"><div class="text-xl font-bold" x-text="db.attendance.filter(a=>a.staffId===me.id&&a.date>=ymd(weekStart(now))).length"></div><div class="text-xs text-gray-500">shifts worked</div></div>
+    <div class="card p-3 text-center"><div class="text-xl font-bold text-green-600" x-text="inr(hoursRange(me.id,ymd(weekStart(now)),today)*tips.rate)"></div><div class="text-xs text-gray-500">est. incentive</div></div>
+  </div>
+
+  <div class="card p-4">
+    <h3 class="font-bold mb-2">My next 7 days</h3>
+    <div class="divide-y">
+      <template x-for="u in myUpcoming" :key="u.d">
+        <div class="flex items-center justify-between py-2 text-sm">
+          <span :class="u.d===today?'font-bold text-brand':''" x-text="dow(u.d)+', '+fmtDate(u.d)+(u.d===today?' (today)':'')"></span>
+          <span class="badge border" :class="u.sh?SHIFTS[u.sh].cls:'bg-gray-50 text-gray-400'" x-text="u.sh?SHIFTS[u.sh].label+' '+SHIFTS[u.sh].start+'–'+SHIFTS[u.sh].end:'Off'"></span>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <div class="grid grid-cols-2 gap-3">
+    <button class="card p-4 text-left hover:shadow-md transition" @click="go('waste')"><div class="text-2xl">🗑️</div><div class="font-bold mt-1">Log waste</div><div class="text-xs text-gray-500">Spoilage, over-prep, returns</div></button>
+    <button class="card p-4 text-left hover:shadow-md transition" @click="go('qr')"><div class="text-2xl">📱</div><div class="font-bold mt-1">Guest QR</div><div class="text-xs text-gray-500">Help a guest leave feedback</div></button>
+  </div>
+</div>
+</template>
+
+<!-- =====================================================================
+     EMS · STAFF DIRECTORY
+===================================================================== -->
+<template x-if="view==='staff' && can('staff')">
+<div class="space-y-4 fade-in">
+  <div class="flex flex-wrap gap-2 items-center">
+    <input class="input" style="max-width:16rem" placeholder="Search name or phone…" x-model="dir.q">
+    <select class="input" style="max-width:10rem" x-model="dir.role"><option>All</option><option>Manager</option><option>Waiter</option><option>Chef</option><option>Cleaner</option></select>
+    <div class="ml-auto flex items-center gap-3">
+      <span class="text-sm text-gray-500" x-text="dirRows.length+' staff'"></span>
+      <button x-show="isAdmin" class="btn btn-primary" @click="dir.showForm=!dir.showForm" x-text="dir.showForm?'Close':'+ Add staff'"></button>
+    </div>
+  </div>
+
+  <div x-show="!isAdmin" class="rounded-lg bg-purple-50 border border-purple-200 text-purple-900 text-sm px-4 py-2">🔒 Wage & salary details are visible to the Owner only.</div>
+
+  <form x-show="dir.showForm && isAdmin" @submit.prevent="addStaff()" class="card p-4 grid sm:grid-cols-2 md:grid-cols-6 gap-3 items-end fade-in">
+    <div class="md:col-span-2"><label class="label">Full name</label><input class="input" x-model="dir.form.name" placeholder="e.g. Kunal Arora" required></div>
+    <div><label class="label">Role</label><select class="input" x-model="dir.form.role"><option>Waiter</option><option>Chef</option><option>Cleaner</option><option>Manager</option></select></div>
+    <div><label class="label">Phone</label><input class="input" x-model="dir.form.phone" placeholder="98xxx xxxxx"></div>
+    <div><label class="label">Monthly salary ₹</label><input class="input" type="number" min="0" x-model.number="dir.form.salary" placeholder="14000" required></div>
+    <button class="btn btn-primary">Save staff</button>
+  </form>
+
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+    <template x-for="r in ['Manager','Waiter','Chef','Cleaner']" :key="r">
+      <div class="card p-3 flex items-center gap-3">
+        <span class="badge" :class="roleCls(r)" x-text="r"></span>
+        <span class="font-bold" x-text="db.staff.filter(s=>s.role===r&&s.active).length"></span>
+        <span x-show="isAdmin" class="ml-auto text-xs text-gray-500" x-text="inr(db.staff.filter(s=>s.role===r&&s.active).reduce((t,s)=>t+s.salary,0))+'/mo'"></span>
+      </div>
+    </template>
+  </div>
+
+  <div class="card overflow-x-auto">
+    <table class="tbl">
+      <thead><tr><th>Staff</th><th>Role</th><th>Phone</th><th>Joined</th><th x-show="isAdmin">Monthly wage</th><th x-show="isAdmin">Hourly (est.)</th><th>Rota · this week</th><th>Status</th></tr></thead>
+      <tbody>
+        <template x-for="s in dirRows" :key="s.id">
+          <tr :class="!s.active?'opacity-50':''">
+            <td><div class="flex items-center gap-3"><div class="w-9 h-9 rounded-full bg-brand-l text-brand flex items-center justify-center text-xs font-bold" x-text="initials(s.name)"></div><div><div class="font-semibold" x-text="s.name"></div><div class="text-xs text-gray-500" x-text="s.title||s.role"></div></div></div></td>
+            <td><span class="badge" :class="roleCls(s.role)" x-text="s.role"></span></td>
+            <td class="whitespace-nowrap" x-text="s.phone||'—'"></td>
+            <td class="whitespace-nowrap" x-text="fmtDateY(s.joined)"></td>
+            <td x-show="isAdmin" class="font-semibold" x-text="inr(s.salary)"></td>
+            <td x-show="isAdmin" x-text="inr2(hourly(s))+'/h'"></td>
+            <td x-text="weekHoursFor(s.id,0)+' h'"></td>
+            <td>
+              <button x-show="isAdmin" @click="s.active=!s.active; log((s.active?'Re-activated ':'Deactivated ')+s.name)" class="badge" :class="s.active?'bg-green-100 text-green-800':'bg-gray-200 text-gray-600'" x-text="s.active?'Active':'Inactive'"></button>
+              <span x-show="!isAdmin" class="badge" :class="s.active?'bg-green-100 text-green-800':'bg-gray-200 text-gray-600'" x-text="s.active?'Active':'Inactive'"></span>
+            </td>
+          </tr>
+        </template>
+      </tbody>
+      <tfoot x-show="isAdmin"><tr class="bg-gray-50 font-semibold"><td class="p-3" colspan="4">Monthly wage bill (active staff)</td><td class="p-3" x-text="inr(db.staff.filter(s=>s.active).reduce((t,s)=>t+s.salary,0))"></td><td colspan="3"></td></tr></tfoot>
+    </table>
+  </div>
+</div>
+</template>
+
+<!-- =====================================================================
+     EMS · SHIFT ROTA
+===================================================================== -->
+<template x-if="view==='rota' && can('rota')">
+<div class="space-y-4 fade-in">
+  <div class="flex flex-wrap items-center gap-2">
+    <button class="btn btn-ghost btn-sm" @click="rotaWeek--">← Prev</button>
+    <div class="font-bold px-2" x-text="weekLabel"></div>
+    <button class="btn btn-ghost btn-sm" @click="rotaWeek++">Next →</button>
+    <button x-show="rotaWeek!==0" class="btn btn-ghost btn-sm" @click="rotaWeek=0">This week</button>
+    <div class="ml-auto flex flex-wrap gap-2" x-show="canEditRota">
+      <button class="btn btn-ghost btn-sm" @click="copyPrevWeek()">⧉ Copy previous week</button>
+      <button class="btn btn-danger btn-sm" @click="clearWeek()">Clear week</button>
+    </div>
+  </div>
+  <div class="flex flex-wrap items-center gap-3 text-xs">
+    <template x-for="(v,k) in SHIFTS" :key="k"><span class="badge border" :class="v.cls" x-text="k+' · '+v.label+' '+v.start+'–'+v.end+' ('+v.hours+'h)'"></span></template>
+    <span class="text-gray-500" x-show="canEditRota">Tap a cell to cycle: Off → Morning → Evening → Double</span>
+    <span class="text-blue-700 font-semibold" x-show="!canEditRota">Read-only · showing your shifts only</span>
+  </div>
+
+  <div class="card overflow-x-auto scroll-thin">
+    <table class="min-w-full text-sm">
+      <thead>
+        <tr class="bg-gray-50">
+          <th class="sticky left-0 bg-gray-50 text-left p-3 text-xs uppercase text-gray-500" style="min-width:11rem">Staff</th>
+          <template x-for="d in rotaDays" :key="d">
+            <th class="p-2 text-center" :class="d===today?'bg-brand-l':''"><div class="text-xs text-gray-500 font-semibold" x-text="dow(d)"></div><div class="font-bold" :class="d===today?'text-brand':''" x-text="dnum(d)"></div></th>
+          </template>
+          <th class="p-2 text-xs uppercase text-gray-500">Hours</th>
+        </tr>
+      </thead>
+      <tbody>
+        <template x-for="s in rotaStaff" :key="s.id">
+          <tr class="border-t">
+            <td class="sticky left-0 bg-white p-3"><div class="font-semibold" x-text="s.name"></div><div class="text-xs text-gray-500" x-text="s.title||s.role"></div></td>
+            <template x-for="d in rotaDays" :key="d">
+              <td class="p-1 text-center" :class="d===today?'bg-brand-l':''">
+                <button @click="cycleShift(d,s.id)" :disabled="!canEditRota" class="shift-cell w-full rounded-lg border py-2 text-xs font-bold transition select-none" :class="(shiftOf(d,s.id)?SHIFTS[shiftOf(d,s.id)].cls:'bg-gray-50 text-gray-300 border-dashed border-gray-300')+(canEditRota?' hover:shadow':' cursor-default')" x-text="shiftOf(d,s.id)?SHIFTS[shiftOf(d,s.id)].label:'Off'"></button>
+              </td>
+            </template>
+            <td class="text-center font-bold" x-text="weekHours(s.id)+'h'"></td>
+          </tr>
+        </template>
+      </tbody>
+      <tfoot x-show="canEditRota" class="bg-gray-50 text-xs">
+        <template x-for="role in ['Chef','Waiter','Cleaner']" :key="role">
+          <tr class="border-t">
+            <td class="sticky left-0 bg-gray-50 p-3 font-semibold" x-text="role+'s on shift'"></td>
+            <template x-for="d in rotaDays" :key="d">
+              <td class="p-1 text-center whitespace-nowrap">
+                <span :class="cov(d,'M',role)?'text-gray-700':'text-red-600 font-bold'" x-text="'M '+cov(d,'M',role)"></span> ·
+                <span :class="cov(d,'E',role)?'text-gray-700':'text-red-600 font-bold'" x-text="'E '+cov(d,'E',role)"></span>
+              </td>
+            </template>
+            <td></td>
+          </tr>
+        </template>
+      </tfoot>
+    </table>
+  </div>
+  <p x-show="canEditRota" class="text-xs text-gray-500">Red counts flag a shift with zero coverage for that role.</p>
+</div>
+</template>
+
+<!-- =====================================================================
+     EMS · ATTENDANCE — Staff self-service
+===================================================================== -->
+<template x-if="view==='attendance' && isStaff && me">
+<div class="max-w-xl mx-auto space-y-4 fade-in">
+  <div class="card p-6 text-center">
+    <div class="text-5xl font-mono font-bold tracking-tight" x-text="clock"></div>
+    <div class="text-sm text-gray-500 mt-1" x-text="dateLabel"></div>
+    <div class="mt-3"><span class="badge border" :class="shiftOf(today,me.id)?SHIFTS[shiftOf(today,me.id)].cls:'bg-gray-50 text-gray-500'" x-text="shiftOf(today,me.id)?'Rostered: '+SHIFTS[shiftOf(today,me.id)].label+' '+SHIFTS[shiftOf(today,me.id)].start+'–'+SHIFTS[shiftOf(today,me.id)].end:'Not rostered today'"></span></div>
+    <button @click="openRecord(me.id)?checkOut(me.id):checkIn(me.id)" class="mt-5 w-40 h-40 rounded-full text-white shadow-xl mx-auto flex flex-col items-center justify-center transition transform hover:scale-105" :class="openRecord(me.id)?'bg-red-600':'bg-brand'">
+      <span class="text-2xl font-bold" x-text="openRecord(me.id)?'Check Out':'Check In'"></span>
+      <span class="text-xs opacity-80 mt-1" x-show="openRecord(me.id)" x-text="liveHrs(openRecord(me.id)).toFixed(1)+' h on duty'"></span>
+    </button>
+    <p class="text-sm text-gray-500 mt-4" x-text="attStatus(me.id).t"></p>
+  </div>
+  <div class="card overflow-hidden">
+    <div class="px-4 py-3 font-bold border-b">My recent attendance</div>
+    <table class="tbl">
+      <thead><tr><th>Date</th><th>In</th><th>Out</th><th>Hours</th><th></th></tr></thead>
+      <tbody>
+        <template x-for="a in myAttendance" :key="a.id">
+          <tr><td x-text="dow(a.date)+' '+fmtDate(a.date)"></td><td x-text="a.in"></td><td x-text="a.out||'—'"></td><td class="font-semibold" x-text="liveHrs(a).toFixed(1)"></td><td><span x-show="isLate(a)" class="badge bg-red-100 text-red-700">Late</span></td></tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
+</div>
+</template>
+
+<!-- =====================================================================
+     EMS · ATTENDANCE — Manager / Owner board
+===================================================================== -->
+<template x-if="view==='attendance' && !isStaff">
+<div class="space-y-5 fade-in">
+  <div class="flex flex-wrap items-center gap-4">
+    <div class="card px-5 py-3 flex items-center gap-3"><span class="w-2 h-2 rounded-full bg-green-500 pulse-dot"></span><span class="font-mono text-2xl font-bold" x-text="clock"></span></div>
+    <div class="text-sm text-gray-600"><span class="font-bold text-green-700" x-text="onDutyNow"></span> on duty now · <span class="font-bold" x-text="scheduledToday.length"></span> rostered today</div>
+  </div>
+
+  <div>
+    <h3 class="font-bold mb-2">Live board · today</h3>
+    <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+      <template x-for="s in attendanceBoard" :key="s.id">
+        <div class="card p-4 flex items-center gap-3">
+          <div class="w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold" :class="attStatus(s.id).k==='on'?'bg-green-100 text-green-800':'bg-gray-100 text-gray-600'" x-text="initials(s.name)"></div>
+          <div class="flex-1 min-w-0">
+            <div class="font-semibold truncate" x-text="s.name"></div>
+            <div class="text-xs text-gray-500" x-text="(shiftOf(today,s.id)?SHIFTS[shiftOf(today,s.id)].label+' shift':'Not rostered')+' · '+attStatus(s.id).t"></div>
+          </div>
+          <button x-show="!openRecord(s.id)" class="btn btn-primary btn-sm" @click="checkIn(s.id)">In</button>
+          <button x-show="openRecord(s.id)" class="btn btn-danger btn-sm" @click="checkOut(s.id)">Out</button>
+        </div>
+      </template>
+    </div>
+  </div>
+
+  <div class="card overflow-x-auto">
+    <div class="flex flex-wrap items-center gap-3 px-4 py-3 border-b">
+      <h3 class="font-bold">Attendance log</h3>
+      <input type="date" class="input ml-auto" style="max-width:11rem" x-model="att.date">
+    </div>
+    <table class="tbl">
+      <thead><tr><th>Staff</th><th>Rostered</th><th>Check-in</th><th>Check-out</th><th>Hours</th><th>Flags</th><th>Entered by</th></tr></thead>
+      <tbody>
+        <template x-for="a in attLog" :key="a.id">
+          <tr>
+            <td class="font-medium" x-text="staffName(a.staffId)"></td>
+            <td x-text="shiftOf(a.date,a.staffId)?SHIFTS[shiftOf(a.date,a.staffId)].start+'–'+SHIFTS[shiftOf(a.date,a.staffId)].end:'—'"></td>
+            <td x-text="a.in"></td>
+            <td x-text="a.out||'On duty'"></td>
+            <td class="font-semibold" x-text="liveHrs(a).toFixed(2)"></td>
+            <td><span x-show="isLate(a)" class="badge bg-red-100 text-red-700">Late</span><span x-show="!isLate(a)" class="badge bg-green-100 text-green-700">On time</span></td>
+            <td class="text-xs text-gray-500" x-text="a.by||'Self'"></td>
+          </tr>
+        </template>
+        <tr x-show="!attLog.length"><td colspan="7" class="text-center text-gray-400 py-6">No attendance recorded for this date.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+</template>
+
+<!-- =====================================================================
+     EMS · TIPS & INCENTIVES
+===================================================================== -->
+<template x-if="view==='tips' && can('tips')">
+<div class="grid lg:grid-cols-3 gap-4 fade-in">
+  <div class="card p-5 space-y-4 lg:col-span-1">
+    <h3 class="font-bold">Calculator settings</h3>
+    <div><label class="label">Period</label>
+      <select class="input" x-model="tips.period"><option value="this">This week (to date)</option><option value="last">Last week</option></select>
+      <p class="text-xs text-gray-500 mt-1" x-text="fmtDate(tipRange.from)+' – '+fmtDate(tipRange.to)"></p>
+    </div>
+    <div><label class="label">Tip pool collected (₹)</label><input class="input" type="number" min="0" x-model.number="tips.pool"><p class="text-xs text-gray-500 mt-1">Enter the tips total from Petpooja's settlement report.</p></div>
+    <div><label class="label">Incentive per hour worked (₹)</label><input class="input" type="number" min="0" x-model.number="tips.rate"></div>
+    <div><label class="label">Punctuality bonus (₹, zero late check-ins)</label><input class="input" type="number" min="0" x-model.number="tips.bonus"></div>
+    <div><label class="label">Eligible roles</label>
+      <div class="flex flex-wrap gap-3 text-sm">
+        <template x-for="r in ['Waiter','Chef','Cleaner','Manager']" :key="r">
+          <label class="flex items-center gap-1"><input type="checkbox" :value="r" x-model="tips.roles"> <span x-text="r"></span></label>
+        </template>
+      </div>
+    </div>
+    <div class="rounded-lg bg-brand-l p-3 text-xs text-gray-700 leading-relaxed">
+      <b>Formula:</b> Tip share = pool × (staff hours ÷ total eligible hours). Payout = tip share + hours × incentive rate + punctuality bonus. Hours come from completed check-in/out records.
+    </div>
+  </div>
+  <div class="lg:col-span-2 space-y-4">
+    <div class="grid grid-cols-3 gap-3">
+      <div class="card p-4"><div class="text-xs text-gray-500 uppercase font-semibold">Eligible hours</div><div class="text-2xl font-bold" x-text="tipTotals.hours.toFixed(1)"></div></div>
+      <div class="card p-4"><div class="text-xs text-gray-500 uppercase font-semibold">Pool / hour</div><div class="text-2xl font-bold" x-text="inr2(tipTotals.hours?tips.pool/tipTotals.hours:0)"></div></div>
+      <div class="card p-4"><div class="text-xs text-gray-500 uppercase font-semibold">Total payout</div><div class="text-2xl font-bold text-green-700" x-text="inr(tipTotals.total)"></div></div>
+    </div>
+    <div class="card overflow-x-auto">
+      <div class="flex items-center justify-between px-4 py-3 border-b"><h3 class="font-bold">Payout breakdown</h3><button class="btn btn-ghost btn-sm" @click="copyText(tipSummary())">Copy summary</button></div>
+      <table class="tbl">
+        <thead><tr><th>Staff</th><th>Shifts</th><th>Hours</th><th>Tip share</th><th>Incentive</th><th>Bonus</th><th>Total</th></tr></thead>
+        <tbody>
+          <template x-for="r in tipRows" :key="r.s.id">
+            <tr>
+              <td><div class="font-semibold" x-text="r.s.name"></div><div class="text-xs text-gray-500" x-text="r.s.role+(r.late?' · '+r.late+' late':'')"></div></td>
+              <td x-text="r.shifts"></td><td x-text="r.hours.toFixed(1)"></td>
+              <td x-text="inr(r.tip)"></td><td x-text="inr(r.inc)"></td>
+              <td><span :class="r.bonus?'text-green-700 font-semibold':'text-gray-400'" x-text="r.bonus?inr(r.bonus):'—'"></span></td>
+              <td class="font-bold" x-text="inr(r.total)"></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+</template>
+
+<!-- =====================================================================
+     PMS · VENDORS
+===================================================================== -->
+<template x-if="view==='vendors' && can('vendors')">
+<div class="space-y-4 fade-in">
+  <div class="flex flex-wrap items-center gap-2">
+    <template x-for="c in ['All'].concat(cats)" :key="c">
+      <button class="btn btn-sm" :class="ven.cat===c?'btn-primary':'btn-ghost'" @click="ven.cat=c" x-text="c"></button>
+    </template>
+    <button class="btn btn-primary ml-auto" @click="ven.showForm=!ven.showForm" x-text="ven.showForm?'Close':'+ Add vendor'"></button>
+  </div>
+  <form x-show="ven.showForm" @submit.prevent="addVendor()" class="card p-4 grid sm:grid-cols-2 md:grid-cols-6 gap-3 items-end fade-in">
+    <div class="md:col-span-2"><label class="label">Vendor name</label><input class="input" x-model="ven.form.name" required></div>
+    <div><label class="label">Category</label><select class="input" x-model="ven.form.cat"><template x-for="c in cats" :key="c"><option :value="c" :selected="ven.form.cat===c" x-text="c"></option></template></select></div>
+    <div><label class="label">Contact person</label><input class="input" x-model="ven.form.contact"></div>
+    <div><label class="label">Phone</label><input class="input" x-model="ven.form.phone"></div>
+    <button class="btn btn-primary">Save vendor</button>
+  </form>
+  <div class="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+    <template x-for="v in filteredVendors" :key="v.id">
+      <div class="card p-5">
+        <div class="flex items-start justify-between gap-2">
+          <div><h3 class="font-bold" x-text="v.name"></h3><span class="badge mt-1 text-white" :style="`background:${catColor[v.cat]}`" x-text="v.cat"></span></div>
+          <span class="text-yellow-500 text-sm" x-text="stars(v.rating)"></span>
+        </div>
+        <div class="mt-3 text-sm space-y-1 text-gray-600">
+          <div>👤 <span x-text="v.contact||'—'"></span></div>
+          <div>📞 <span x-text="v.phone||'—'"></span></div>
+          <div>💳 <span x-text="v.terms"></span></div>
+        </div>
+        <div class="mt-4 pt-3 border-t flex items-center justify-between text-sm">
+          <span class="text-gray-500"><span class="font-semibold text-gray-800" x-text="vendorPOs(v.id)"></span> POs · 30d</span>
+          <span x-show="isAdmin" class="font-bold" x-text="inr(vendorSpend(v.id))"></span>
+          <button class="text-brand font-semibold text-xs" @click="po.form.vendorId=v.id; go('purchases')">New PO →</button>
+        </div>
+      </div>
+    </template>
+  </div>
+</div>
+</template>
+
+<!-- =====================================================================
+     PMS · PURCHASE ORDERS
+===================================================================== -->
+<template x-if="view==='purchases' && can('purchases')">
+<div class="grid lg:grid-cols-3 gap-4 fade-in">
+  <form @submit.prevent="addPurchase()" class="card p-5 space-y-3 lg:col-span-1 self-start">
+    <h3 class="font-bold">Log a purchase</h3>
+    <div><label class="label">Date</label><input type="date" class="input" x-model="po.form.date" :max="today"></div>
+    <div><label class="label">Vendor</label>
+      <select class="input" x-model="po.form.vendorId"><template x-for="v in db.vendors" :key="v.id"><option :value="v.id" :selected="po.form.vendorId===v.id" x-text="v.name+' · '+v.cat"></option></template></select>
+    </div>
+    <div><label class="label">Item</label>
+      <select class="input" x-model="po.form.item"><template x-for="it in poItems" :key="it.name"><option :value="it.name" :selected="po.form.item===it.name" x-text="it.name+' ('+it.unit+')'"></option></template></select>
+    </div>
+    <div class="grid grid-cols-2 gap-3">
+      <div><label class="label" x-text="'Quantity ('+((itemInfo(po.form.item)||{}).unit||'')+')'"></label><input class="input" type="number" step="0.01" min="0" x-model="po.form.qty" placeholder="0" required></div>
+      <div><label class="label">Total paid (₹)</label><input class="input" type="number" step="0.01" min="0" x-model="po.form.price" placeholder="0" required></div>
+    </div>
+    <div class="rounded-lg bg-gray-50 p-3 text-sm flex items-center justify-between">
+      <span>Unit price: <b x-text="poUnitPrice?inr2(poUnitPrice)+'/'+((itemInfo(po.form.item)||{}).unit||''):'—'"></b></span>
+      <span x-show="poDelta!==null" class="badge" :class="poDelta>0?'bg-red-100 text-red-700':'bg-green-100 text-green-700'" x-text="(poDelta>0?'▲ ':'▼ ')+Math.abs(poDelta||0).toFixed(1)+'% vs last'"></span>
+    </div>
+    <div><label class="label">Notes / invoice #</label><input class="input" x-model="po.form.notes" placeholder="Optional"></div>
+    <button class="btn btn-primary w-full">Add to expense table</button>
+    <p class="text-xs text-gray-500">Recipe costs update automatically from the latest unit price.</p>
+  </form>
+
+  <div class="lg:col-span-2 space-y-3">
+    <div class="flex flex-wrap items-center gap-2">
+      <select class="input" style="max-width:10rem" x-model="po.filterCat"><option>All</option><template x-for="c in cats" :key="c"><option :value="c" x-text="c"></option></template></select>
+      <select class="input" style="max-width:10rem" x-model="po.range"><option value="1w">This week</option><option value="4w">Last 4 weeks</option><option value="all">All time</option></select>
+      <div class="ml-auto text-sm"><span class="text-gray-500" x-text="poRows.length+' entries · '"></span><b x-text="inr(poRows.reduce((t,p)=>t+p.price,0))"></b></div>
+    </div>
+    <div class="flex flex-wrap gap-2">
+      <template x-for="c in cats" :key="c">
+        <span class="badge bg-white border" x-show="poCatTotals[c]"><span class="w-2 h-2 rounded-full inline-block" :style="`background:${catColor[c]}`"></span><span x-text="c+' '+inr(poCatTotals[c]||0)"></span></span>
+      </template>
+    </div>
+    <div class="card overflow-x-auto" style="max-height:34rem">
+      <table class="tbl">
+        <thead class="sticky top-0"><tr><th>Date</th><th>Vendor</th><th>Item</th><th>Qty</th><th>Unit price</th><th>Total</th><th>By</th><th x-show="isAdmin"></th></tr></thead>
+        <tbody>
+          <template x-for="p in poRows" :key="p.id">
+            <tr :class="p.id===po.flash?'bg-green-50':''">
+              <td class="whitespace-nowrap" x-text="fmtDate(p.date)"></td>
+              <td class="whitespace-nowrap" x-text="vendorName(p.vendorId)"></td>
+              <td class="font-medium" x-text="p.item"></td>
+              <td class="whitespace-nowrap" x-text="p.qty+' '+p.unit"></td>
+              <td class="whitespace-nowrap" x-text="inr2(p.price/p.qty)"></td>
+              <td class="font-semibold" x-text="inr(p.price)"></td>
+              <td class="text-xs text-gray-500" x-text="staffName(p.by)"></td>
+              <td x-show="isAdmin"><button class="text-red-500 text-xs hover:underline" @click="deletePurchase(p.id)">Delete</button></td>
+            </tr>
+          </template>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+</template>
+
+<!-- =====================================================================
+     PMS · PRICE TRACKER
+===================================================================== -->
+<template x-if="view==='prices' && can('prices')">
+<div class="space-y-4 fade-in">
+  <div class="grid md:grid-cols-3 gap-3">
+    <div class="card p-4"><div class="text-xs uppercase font-semibold text-gray-500">Basket inflation (WoW, spend-weighted)</div><div class="text-2xl font-bold" :class="basketInflation>0?'text-red-600':'text-green-600'" x-text="(basketInflation>0?'+':'')+basketInflation.toFixed(1)+'%'"></div></div>
+    <div class="card p-4"><div class="text-xs uppercase font-semibold text-gray-500">Items rising &gt;5%</div><div class="text-2xl font-bold text-red-600" x-text="inflationAlerts.length"></div></div>
+    <div class="card p-4"><div class="text-xs uppercase font-semibold text-gray-500">Items cheaper this week</div><div class="text-2xl font-bold text-green-600" x-text="priceRows.filter(r=>r.wow!==null&&r.wow<0).length"></div></div>
+  </div>
+  <div x-show="inflationAlerts.length" class="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-900">
+    <b>⚠ Inflation watch:</b>
+    <span x-text="inflationAlerts.map(r=>r.it.name+' +'+r.wow.toFixed(1)+'%').join(' · ')"></span>
+    <span class="block text-xs mt-1 text-red-700">Consider negotiating with the vendor, checking the alternate supplier, or reviewing affected recipe prices.</span>
+  </div>
+  <div class="card overflow-x-auto">
+    <table class="tbl">
+      <thead><tr><th>Item</th><th>Category</th><template x-for="(w,i) in weekLabels" :key="i"><th x-text="w"></th></template><th>Trend</th><th>WoW</th><th>4-week</th></tr></thead>
+      <tbody>
+        <template x-for="r in priceRows" :key="r.it.name">
+          <tr>
+            <td class="font-semibold whitespace-nowrap" x-text="r.it.name+' / '+r.it.unit"></td>
+            <td><span class="badge text-white" :style="`background:${catColor[r.it.cat]}`" x-text="r.it.cat"></span></td>
+            <template x-for="(v,i) in r.series" :key="i"><td class="whitespace-nowrap" :class="i===3?'font-bold':''" x-text="v!==null?inr2(v):'—'"></td></template>
+            <td><div class="flex items-end gap-1 h-8"><template x-for="(v,i) in r.series" :key="i"><div class="w-2 rounded-sm" :class="i===3?'bg-brand':'bg-gray-300'" :style="`height:${v===null?6:20+(r.max===r.min?40:(v-r.min)/(r.max-r.min)*80)}%`"></div></template></div></td>
+            <td><span x-show="r.wow!==null" class="badge" :class="r.wow>5?'bg-red-100 text-red-700':r.wow>0?'bg-yellow-100 text-yellow-800':'bg-green-100 text-green-700'" x-text="(r.wow>0?'▲ ':'▼ ')+Math.abs(r.wow||0).toFixed(1)+'%'"></span></td>
+            <td class="text-xs" :class="(r.m4||0)>0?'text-red-600':'text-green-600'" x-text="r.m4===null?'—':((r.m4>0?'+':'')+r.m4.toFixed(1)+'%')"></td>
+          </tr>
+        </template>
+      </tbody>
+    </table>
+  </div>
+  <p class="text-xs text-gray-500">Weekly average = total paid ÷ total quantity for that week (weighted). Weeks run Monday–Sunday.</p>
+</div>
+</template>
+
+<!-- =====================================================================
+     KITCHEN · RECIPE COSTING
+===================================================================== -->
+<template x-if="view==='recipes' && can('recipes')">
+<div class="grid lg:grid-cols-3 gap-4 fade-in">
+  <div class="space-y-3">
+    <template x-for="r in db.recipes" :key="r.id">
+      <button class="card p-4 w-full text-left transition hover:shadow-md" :class="rec.sel===r.id?'ring-2 ring-offset-1 border-brand':''" :style="rec.sel===r.id?'--tw-ring-color:#0f766e':''" @click="rec.sel=r.id">
+        <div class="flex items-start justify-between gap-2">
+          <div><div class="font-bold" x-text="r.name"></div><div class="text-xs text-gray-500" x-text="r.category+' · menu '+inr(r.price)"></div></div>
+          <span class="badge" :class="pctCls(foodPct(r))" x-text="foodPct(r).toFixed(1)+'%'"></span>
+        </div>
+        <div class="text-sm mt-2 text-gray-600">Plate cost <b x-text="inr2(plateCost(r))"></b></div>
+      </button>
+    </template>
+    <form x-show="isAdmin" @submit.prevent="addRecipe()" class="card p-4 space-y-2">
+      <div class="font-semibold text-sm">+ New menu item</div>
+      <input class="input" placeholder="Dish name" x-model="rec.newName" required>
+      <div class="flex gap-2"><input class="input" type="number" min="1" placeholder="Menu price ₹" x-model.number="rec.newPrice" required><button class="btn btn-primary">Add</button></div>
+    </form>
+  </div>
+
+  <div class="lg:col-span-2">
+    <template x-if="selRecipe">
+      <div class="card p-5 space-y-4">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 class="text-xl font-bold" x-text="selRecipe.name"></h2>
+            <p class="text-sm text-gray-500" x-text="selRecipe.category"></p>
+          </div>
+          <div class="flex items-center gap-2">
+            <label class="label mb-0">Menu price ₹</label>
+            <input x-show="isAdmin" type="number" class="input" style="width:7rem" x-model.number="selRecipe.price">
+            <span x-show="!isAdmin" class="font-bold" x-text="inr(selRecipe.price)"></span>
+          </div>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div class="rounded-lg bg-gray-50 p-3"><div class="text-xs text-gray-500">Plate cost</div><div class="text-lg font-bold" x-text="inr2(plateCost(selRecipe))"></div></div>
+          <div class="rounded-lg bg-gray-50 p-3"><div class="text-xs text-gray-500">Food cost %</div><div class="text-lg font-bold" x-text="foodPct(selRecipe).toFixed(1)+'%'"></div></div>
+          <div class="rounded-lg bg-gray-50 p-3" x-show="isAdmin"><div class="text-xs text-gray-500">Gross margin / plate</div><div class="text-lg font-bold text-green-700" x-text="inr2(selRecipe.price-plateCost(selRecipe))"></div></div>
+          <div class="rounded-lg bg-gray-50 p-3" x-show="isAdmin"><div class="text-xs text-gray-500">Price for 32% target</div><div class="text-lg font-bold" x-text="inr(Math.ceil(plateCost(selRecipe)/0.32/5)*5)"></div></div>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="tbl">
+            <thead><tr><th>Raw ingredient</th><th>Qty / plate</th><th>Latest unit cost</th><th>Line cost</th><th>Share</th><th x-show="isAdmin"></th></tr></thead>
+            <tbody>
+              <template x-for="(g,idx) in selRecipe.ing" :key="g.item+idx">
+                <tr>
+                  <td class="font-medium" x-text="g.item"></td>
+                  <td>
+                    <div x-show="isAdmin" class="flex items-center gap-1"><input type="number" step="0.001" min="0" class="input py-1" style="width:6rem" x-model.number="g.qty"><span class="text-xs text-gray-500" x-text="(itemInfo(g.item)||{}).unit"></span></div>
+                    <span x-show="!isAdmin" x-text="fmtQty(g.qty,(itemInfo(g.item)||{}).unit)"></span>
+                  </td>
+                  <td class="whitespace-nowrap" x-text="inr2(latestPrice(g.item))+'/'+((itemInfo(g.item)||{}).unit||'')"></td>
+                  <td class="font-semibold" x-text="inr2(lineCost(g))"></td>
+                  <td style="min-width:7rem"><div class="h-2 rounded-full bg-gray-100"><div class="h-2 rounded-full bg-gold" :style="`width:${plateCost(selRecipe)?lineCost(g)/plateCost(selRecipe)*100:0}%`"></div></div></td>
+                  <td x-show="isAdmin"><button class="text-red-500 text-xs hover:underline" @click="selRecipe.ing.splice(idx,1)">Remove</button></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+        <form x-show="isAdmin" @submit.prevent="addIngredient()" class="flex flex-wrap items-end gap-2 pt-2 border-t">
+          <div class="flex-1" style="min-width:10rem"><label class="label">Add ingredient</label><select class="input" x-model="rec.addItem"><template x-for="it in db.items.filter(i=>i.cat!=='Gas')" :key="it.name"><option :value="it.name" :selected="rec.addItem===it.name" x-text="it.name+' ('+it.unit+')'"></option></template></select></div>
+          <div style="width:8rem"><label class="label" x-text="'Qty ('+((itemInfo(rec.addItem)||{}).unit||'')+')'"></label><input class="input" type="number" step="0.001" min="0" x-model="rec.addQty" placeholder="0.150" required></div>
+          <button class="btn btn-primary">Add</button>
+          <button type="button" class="btn btn-danger" @click="deleteRecipe(selRecipe.id)">Delete dish</button>
+        </form>
+        <p x-show="!isAdmin" class="text-xs text-gray-500">View-only for managers. Owner can edit quantities and menu prices.</p>
+        <p class="text-xs text-gray-500">Unit costs are pulled live from the most recent purchase in PMS — log a new purchase and this sheet re-prices instantly.</p>
+      </div>
+    </template>
+  </div>
+</div>
+</template>
+
+<!-- =====================================================================
+     KITCHEN · WASTE LOG
+===================================================================== -->
+<template x-if="view==='waste' && can('waste')">
+<div class="grid lg:grid-cols-3 gap-4 fade-in">
+  <form @submit.prevent="addWaste()" class="card p-5 space-y-3 self-start">
+    <h3 class="font-bold">Quick waste entry</h3>
+    <div class="grid grid-cols-2 bg-gray-100 rounded-lg p-1 text-sm">
+      <button type="button" class="py-1.5 rounded-md" :class="wst.form.kind==='raw'?'bg-white shadow font-semibold text-brand':''" @click="wst.form.kind='raw'">Raw ingredient</button>
+      <button type="button" class="py-1.5 rounded-md" :class="wst.form.kind==='dish'?'bg-white shadow font-semibold text-brand':''" @click="wst.form.kind='dish'">Prepared dish</button>
+    </div>
+    <div x-show="wst.form.kind==='raw'"><label class="label">Ingredient</label><select class="input" x-model="wst.form.item"><template x-for="it in db.items.filter(i=>i.cat!=='Gas')" :key="it.name"><option :value="it.name" :selected="wst.form.item===it.name" x-text="it.name"></option></template></select></div>
+    <div x-show="wst.form.kind==='dish'"><label class="label">Dish</label><select class="input" x-model="wst.form.dish"><template x-for="r in db.recipes" :key="r.id"><option :value="r.id" :selected="wst.form.dish===r.id" x-text="r.name"></option></template></select></div>
+    <div><label class="label" x-text="'Quantity ('+wUnit+')'"></label>
+      <input class="input text-lg" type="number" step="0.01" min="0" x-model="wst.form.qty" placeholder="0" required>
+      <div class="flex gap-2 mt-2"><template x-for="q in (wst.form.kind==='dish'?[1,2,3,5]:[0.25,0.5,1,2])" :key="q"><button type="button" class="btn btn-ghost btn-sm flex-1" @click="wst.form.qty=q" x-text="q"></button></template></div>
+    </div>
+    <div><label class="label">Reason</label>
+      <div class="grid grid-cols-2 gap-2"><template x-for="r in wasteReasons" :key="r"><button type="button" class="btn btn-sm" :class="wst.form.reason===r?'btn-primary':'btn-ghost'" @click="wst.form.reason=r" x-text="r"></button></template></div>
+    </div>
+    <div><label class="label">Notes</label><input class="input" x-model="wst.form.notes" placeholder="Optional"></div>
+    <div class="rounded-lg bg-red-50 p-3 flex items-center justify-between"><span class="text-sm text-red-800">Cost impact</span><span class="text-xl font-bold text-red-700" x-text="inr2(wCost)"></span></div>
+    <button class="btn btn-primary w-full">Log waste</button>
+  </form>
+
+  <div class="lg:col-span-2 space-y-4">
+    <div x-show="!isStaff" class="grid md:grid-cols-2 gap-4">
+      <div class="card p-5">
+        <div class="text-xs uppercase font-semibold text-gray-500">Waste cost · last 7 days</div>
+        <div class="text-3xl font-bold text-red-600" x-text="inr(waste7)"></div>
+        <div class="text-xs text-gray-500 mt-1" x-text="waste7List.length+' entries · '+(spend7?(waste7/spend7*100).toFixed(1):0)+'% of purchases'"></div>
+        <div class="mt-4 space-y-2">
+          <template x-for="w in wasteByReason" :key="w.reason">
+            <div><div class="flex justify-between text-xs mb-1"><span x-text="w.reason"></span><span x-text="inr(w.cost)"></span></div><div class="h-2 bg-gray-100 rounded-full"><div class="h-2 bg-red-400 rounded-full" :style="`width:${w.pct}%`"></div></div></div>
+          </template>
+        </div>
+      </div>
+      <div class="card p-5">
+        <div class="font-bold mb-3">Top wasted items · 7 days</div>
+        <template x-for="(t,i) in topWasted" :key="t.item">
+          <div class="flex items-center justify-between py-1.5 text-sm border-b last:border-0"><span><span class="text-gray-400 mr-2" x-text="i+1"></span><span class="font-medium" x-text="t.item"></span></span><span class="font-semibold" x-text="inr(t.cost)"></span></div>
+        </template>
+      </div>
+    </div>
+    <div class="card overflow-x-auto">
+      <div class="px-4 py-3 border-b font-bold" x-text="isStaff?'My waste entries':'Waste & spoilage log'"></div>
+      <table class="tbl">
+        <thead><tr><th>When</th><th>Item</th><th>Qty</th><th>Reason</th><th>Cost</th><th>Logged by</th><th x-show="isAdmin"></th></tr></thead>
+        <tbody>
+          <template x-for="w in wasteRows" :key="w.id">
+            <tr :class="w.id===wst.flash?'bg-green-50':''">
+              <td class="whitespace-nowrap" x-text="fmtDate(w.date)+' '+w.time"></td>
+              <td><div class="font-medium" x-text="w.item"></div><div class="text-xs text-gray-500" x-show="w.notes" x-text="w.notes"></div></td>
+              <td class="whitespace-nowrap" x-text="w.qty+' '+w.unit"></td>
+              <td><span class="badge bg-gray-100 text-gray-700" x-text="w.reason"></span></td>
+              <td class="font-semibold text-red-600" x-text="inr2(w.cost)"></td>
+              <td class="text-xs text-gray-500" x-text="staffName(w.by)"></td>
+              <td x-show="isAdmin"><button class="text-red-500 text-xs hover:underline" @click="deleteWaste(w.id)">Delete</button></td>
+            </tr>
+          </template>
+          <tr x-show="!wasteRows.length"><td colspan="7" class="text-center text-gray-400 py-6">No entries yet.</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+</template>
+
+<!-- =====================================================================
+     CRM · FEEDBACK INBOX
+===================================================================== -->
+<template x-if="view==='feedback' && can('feedback')">
+<div class="space-y-4 fade-in">
+  <div class="flex flex-wrap items-center gap-2">
+    <template x-for="t in [['all','All'],['new','New'],['in-progress','In progress'],['resolved','Resolved']]" :key="t[0]">
+      <button class="btn btn-sm" :class="fb.filter===t[0]?'btn-primary':'btn-ghost'" @click="fb.filter=t[0]"><span x-text="t[1]"></span><span class="opacity-75" x-text="'('+(t[0]==='all'?db.feedback.length:fbCount(t[0]))+')'"></span></button>
+    </template>
+    <label class="ml-auto flex items-center gap-2 text-sm"><input type="checkbox" x-model="fb.lowOnly"> Complaints only (≤3★)</label>
+  </div>
+  <div class="rounded-lg bg-brand-l px-4 py-2 text-sm text-gray-700">🛡️ <b>Private-first:</b> all QR feedback lands here first. Unhappy guests get a private resolution; only happy guests you approve are invited to post a public Google review.</div>
+  <div class="grid lg:grid-cols-5 gap-4">
+    <div class="lg:col-span-2 card divide-y overflow-y-auto scroll-thin" style="max-height:38rem">
+      <template x-for="f in fbList" :key="f.id">
+        <button class="w-full text-left p-4 hover:bg-gray-50 transition" :class="fb.sel===f.id?'bg-brand-l':''" @click="fb.sel=f.id">
+          <div class="flex items-center justify-between gap-2">
+            <span class="text-yellow-500" x-text="stars(f.rating)"></span>
+            <span class="badge" :class="statusCls(f.status)" x-text="statusLabel(f.status)"></span>
+          </div>
+          <p class="text-sm mt-1 text-gray-800" style="display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden" x-text="f.message"></p>
+          <p class="text-xs text-gray-500 mt-1" x-text="(f.name||'Anonymous')+' · '+f.table+' · '+f.category+' · '+fmtDate(f.date)"></p>
+        </button>
+      </template>
+      <p x-show="!fbList.length" class="p-6 text-center text-gray-400 text-sm">Nothing here.</p>
+    </div>
+    <div class="lg:col-span-3">
+      <template x-if="fbSel">
+        <div class="card p-5 space-y-4">
+          <div class="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div class="text-2xl text-yellow-500" x-text="stars(fbSel.rating)"></div>
+              <div class="text-sm text-gray-500" x-text="fbSel.table+' · '+fbSel.category+' · '+fmtDate(fbSel.date)+' '+fbSel.time"></div>
+            </div>
+            <span class="badge text-sm" :class="statusCls(fbSel.status)" x-text="statusLabel(fbSel.status)"></span>
+          </div>
+          <blockquote class="bg-gray-50 rounded-xl p-4 text-gray-800 border-l-4" :class="fbSel.rating<=3?'border-red-400':'border-green-400'" x-text="fbSel.message"></blockquote>
+          <div class="flex flex-wrap gap-4 text-sm text-gray-600">
+            <span>👤 <b x-text="fbSel.name||'Anonymous'"></b></span>
+            <span>📞 <span x-text="fbSel.phone||'Not shared'"></span></span>
+            <span x-text="fbSel.optIn?'✅ WhatsApp opt-in':'✖ No WhatsApp opt-in'"></span>
+          </div>
+
+          <div class="space-y-2" x-show="fbSel.replies.length">
+            <div class="label">Conversation</div>
+            <template x-for="(r,i) in fbSel.replies" :key="i">
+              <div class="rounded-lg bg-green-50 border border-green-100 p-3 text-sm"><div class="text-xs text-gray-500 mb-1" x-text="r.by+' · '+r.at"></div><div x-text="r.text"></div></div>
+            </template>
+          </div>
+
+          <div>
+            <label class="label">Reply privately</label>
+            <div class="flex flex-wrap gap-2 mb-2"><template x-for="(q,i) in quickReplies" :key="i"><button class="btn btn-ghost btn-sm" @click="fb.reply=q" x-text="'Template '+(i+1)"></button></template></div>
+            <textarea class="input" rows="3" x-model="fb.reply" placeholder="Write a reply… (sent via WhatsApp if the guest opted in)"></textarea>
+            <div class="flex flex-wrap gap-2 mt-2">
+              <button class="btn btn-primary" @click="sendReply()" :disabled="!fb.reply.trim()">Send reply</button>
+              <button class="btn btn-ghost" x-show="fbSel.status==='new'" @click="setStatus(fbSel,'in-progress')">Mark in progress</button>
+              <button class="btn btn-ghost" x-show="fbSel.status!=='resolved'" @click="setStatus(fbSel,'resolved')">✓ Resolve</button>
+              <button class="btn btn-ghost" x-show="fbSel.status==='resolved'" @click="setStatus(fbSel,'in-progress')">Reopen</button>
+            </div>
+          </div>
+
+          <div class="rounded-xl border p-4" :class="fbSel.rating>=4?'border-green-200 bg-green-50':'border-gray-200 bg-gray-50'">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <div class="text-sm">
+                <div class="font-semibold">Public review gate</div>
+                <div class="text-gray-600 text-xs" x-text="fbSel.rating>=4?'Happy guest — approve to send a Google review invite.':'Kept private. Resolve the issue before any public ask.'"></div>
+              </div>
+              <button class="btn btn-sm" :disabled="fbSel.rating<4" :class="fbSel.publicOk?'btn-primary':'btn-ghost'" @click="togglePublic(fbSel)" x-text="fbSel.publicOk?'✓ Invite sent':'Approve & invite'"></button>
+            </div>
+          </div>
+        </div>
+      </template>
+      <div x-show="!fbSel" class="card p-10 text-center text-gray-400">Select feedback to view.</div>
+    </div>
+  </div>
+</div>
+</template>
+
+<!-- =====================================================================
+     CRM · TABLE QR (Guest simulation)
+===================================================================== -->
+<template x-if="view==='qr' && can('qr')">
+<div class="grid lg:grid-cols-2 gap-6 fade-in">
+  <div class="space-y-4">
+    <div>
+      <h2 class="text-xl font-bold">Table QR codes</h2>
+      <p class="text-sm text-gray-500">Each table gets a unique QR sticker. Tap one to simulate a guest scanning it.</p>
+    </div>
+    <div class="grid grid-cols-3 sm:grid-cols-4 gap-3">
+      <template x-for="t in tables" :key="t">
+        <button class="card p-3 text-center hover:shadow-md transition" :class="qr.table===t?'ring-2 border-brand':''" style="--tw-ring-color:#0f766e" @click="openTable(t)">
+          <div class="w-full rounded overflow-hidden border" style="padding-top:100%;position:relative"><div style="position:absolute;inset:0" x-html="qrSvg(t)"></div></div>
+          <div class="font-bold mt-2 text-sm" x-text="'Table '+t.slice(1)"></div>
+        </button>
+      </template>
+    </div>
+    <p class="text-xs text-gray-500">Production: each QR encodes <code class="bg-gray-100 px-1 rounded">https://phinikoasis.in/f/&lt;table-id&gt;</code> and opens this form on the guest's phone — no app install.</p>
+  </div>
+
+  <div class="flex justify-center">
+    <div class="phone w-full" style="max-width:360px">
+      <div class="bg-gray-900 text-white text-xs flex justify-between px-5 py-1"><span x-text="clock"></span><span>5G ▮▮▮</span></div>
+      <div class="hero text-white px-5 py-5">
+        <div class="text-xs tracking-widest text-white text-opacity-70">WELCOME TO</div>
+        <div class="text-2xl font-black">Phinik Oasis</div>
+        <div class="text-sm text-white text-opacity-80" x-text="qr.table?'Table '+qr.table.slice(1)+' · Private feedback':'Scan a table QR to begin'"></div>
+      </div>
+      <div class="p-5 overflow-y-auto scroll-thin" style="height:520px">
+        <template x-if="!qr.table">
+          <div class="text-center text-gray-400 pt-24"><div class="text-5xl mb-3">📷</div>Tap a table QR on the left to simulate a scan.</div>
+        </template>
+
+        <template x-if="qr.table && qr.step==='form'">
+          <form @submit.prevent="submitFeedback()" class="space-y-4">
+            <div class="text-center">
+              <div class="font-bold text-lg">How was your experience?</div>
+              <div class="text-xs text-gray-500">This goes directly to the owner — not public.</div>
+              <div class="flex justify-center gap-1 mt-3">
+                <template x-for="i in 5" :key="i"><span class="star" :class="i<=qr.form.rating?'text-yellow-400':'text-gray-300'" @click="qr.form.rating=i">★</span></template>
+              </div>
+              <div class="text-sm font-semibold mt-1 h-5" x-text="['','Very poor','Poor','Okay','Great','Excellent!'][qr.form.rating]"></div>
+            </div>
+            <div>
+              <div class="label">What's it about?</div>
+              <div class="flex flex-wrap gap-2"><template x-for="c in fbCategories" :key="c"><button type="button" class="badge border text-sm py-1 px-3" :class="qr.form.category===c?'bg-brand text-white border-transparent':'bg-white text-gray-600'" @click="qr.form.category=c" x-text="c"></button></template></div>
+            </div>
+            <div><div class="label">Tell us more</div><textarea class="input" rows="3" x-model="qr.form.message" :placeholder="qr.form.rating&&qr.form.rating<=3?'What went wrong? We\'ll make it right.':'What did you enjoy?'"></textarea></div>
+            <div class="grid grid-cols-2 gap-2">
+              <input class="input" x-model="qr.form.name" placeholder="Name (optional)">
+              <input class="input" x-model="qr.form.phone" placeholder="Mobile (optional)" inputmode="tel">
+            </div>
+            <label class="flex items-start gap-2 text-xs text-gray-600"><input type="checkbox" class="mt-0.5" x-model="qr.form.optIn"> Send me offers & updates on WhatsApp. I can reply STOP anytime.</label>
+            <button class="btn btn-primary w-full py-3">Send privately</button>
+          </form>
+        </template>
+
+        <template x-if="qr.table && qr.step==='done' && qr.last">
+          <div class="text-center pt-10 space-y-4">
+            <div class="text-6xl" x-text="qr.last.rating>=4?'🥰':'🙏'"></div>
+            <div class="text-xl font-bold" x-text="qr.last.rating>=4?'Thank you so much!':'We\'re sorry — and grateful you told us.'"></div>
+            <p class="text-sm text-gray-600" x-text="qr.last.rating>=4?'Your kind words have reached our team.':'Our manager has been alerted and will reach out privately'+(qr.last.phone?' on WhatsApp shortly.':'.')"></p>
+            <template x-if="qr.last.rating>=4">
+              <div class="rounded-xl bg-green-50 border border-green-200 p-4">
+                <div class="text-sm font-semibold">Would you share this on Google?</div>
+                <button class="btn btn-primary w-full mt-3" @click="toast('Would open the Google review link (simulated)','info')">⭐ Post a Google review</button>
+              </div>
+            </template>
+            <button class="btn btn-ghost w-full" @click="openTable(qr.table)">Submit another</button>
+          </div>
+        </template>
+      </div>
+    </div>
+  </div>
+</div>
+</template>
+
+<!-- =====================================================================
+     CRM · WHATSAPP CAMPAIGNS
+===================================================================== -->
+<template x-if="view==='whatsapp' && can('whatsapp')">
+<div class="grid lg:grid-cols-5 gap-4 fade-in">
+  <div class="lg:col-span-2 card p-5 space-y-3 self-start">
+    <h3 class="font-bold">Campaign builder</h3>
+    <div><label class="label">Campaign type</label>
+      <select class="input" x-model="wa.type"><template x-for="(v,k) in waTypes" :key="k"><option :value="k" :selected="wa.type===k" x-text="v"></option></template></select>
+    </div>
+    <div><label class="label">Headline / offer name</label><input class="input" x-model="wa.headline"></div>
+    <div class="grid grid-cols-2 gap-3">
+      <div><label class="label">Discount %</label><input class="input" type="number" min="0" max="100" x-model.number="wa.discount"></div>
+      <div><label class="label">Valid till</label><input class="input" type="date" x-model="wa.validTill"></div>
+    </div>
+    <div><label class="label">Reservation number</label><input class="input" x-model="wa.cta"></div>
+    <div class="grid grid-cols-2 gap-3">
+      <div><label class="label">Tone</label><select class="input" x-model="wa.tone"><option value="english">English</option><option value="hinglish">Hinglish</option></select></div>
+      <div><label class="label">Audience</label><select class="input" x-model="wa.segment"><template x-for="(v,k) in waSegments" :key="k"><option :value="k" :selected="wa.segment===k" x-text="v"></option></template></select></div>
+    </div>
+    <label class="flex items-center gap-2 text-sm"><input type="checkbox" x-model="wa.emoji"> Include emojis</label>
+    <div class="rounded-lg bg-yellow-50 border border-yellow-200 p-3 text-xs text-yellow-900">Bulk sends require a WhatsApp Business API provider and a pre-approved marketing template. Only opted-in guests are included.</div>
+  </div>
+
+  <div class="lg:col-span-3 space-y-4">
+    <div class="card overflow-hidden">
+      <div class="flex items-center gap-3 px-4 py-3" style="background:#075e54;color:#fff">
+        <div class="w-9 h-9 rounded-full bg-gold flex items-center justify-center font-bold">P</div>
+        <div><div class="font-semibold text-sm">Phinik Oasis</div><div class="text-xs opacity-75">Business account · preview</div></div>
+      </div>
+      <div class="wa-bg p-4" style="min-height:16rem">
+        <div class="wa-bubble ml-auto p-3 text-sm text-gray-900" style="max-width:90%">
+          <div x-html="waHtml(waMessage(waPreviewName))"></div>
+          <div class="text-right text-xs text-gray-500 mt-1" x-text="clock+' ✓✓'"></div>
+        </div>
+      </div>
+      <div class="flex flex-wrap items-center gap-2 px-4 py-3 border-t">
+        <span class="text-xs text-gray-500" x-text="waMessage().length+' chars · personalised with {name}'"></span>
+        <div class="ml-auto flex flex-wrap gap-2">
+          <button class="btn btn-ghost btn-sm" @click="copyText(waMessage())">Copy template</button>
+          <a class="btn btn-ghost btn-sm" :href="'https://wa.me/?text='+encodeURIComponent(waMessage(waPreviewName))" target="_blank" rel="noopener">Test in WhatsApp</a>
+          <button class="btn btn-primary btn-sm" :disabled="!waAudience.length" @click="scheduleCampaign()" x-text="'Queue to '+waAudience.length+' guests'"></button>
+        </div>
+      </div>
+    </div>
+
+    <div class="grid md:grid-cols-2 gap-4">
+      <div class="card overflow-hidden">
+        <div class="px-4 py-3 border-b font-bold text-sm" x-text="'Audience · '+waSegments[wa.segment]+' ('+waAudience.length+')'"></div>
+        <div class="divide-y overflow-y-auto scroll-thin" style="max-height:15rem">
+          <template x-for="c in waAudience" :key="c.phone">
+            <div class="px-4 py-2 flex items-center justify-between text-sm">
+              <div><div class="font-medium" x-text="c.name"></div><div class="text-xs text-gray-500" x-text="c.phone"></div></div>
+              <div class="text-right text-xs text-gray-500"><div x-text="c.visits+' visits'"></div><div x-text="'last '+daysSince(c.lastVisit)+'d ago'"></div></div>
+            </div>
+          </template>
+          <p x-show="!waAudience.length" class="p-4 text-sm text-gray-400">No opted-in guests in this segment.</p>
+        </div>
+      </div>
+      <div class="card overflow-hidden">
+        <div class="px-4 py-3 border-b font-bold text-sm">Campaign history</div>
+        <div class="divide-y overflow-y-auto scroll-thin" style="max-height:15rem">
+          <template x-for="c in db.campaigns" :key="c.id">
+            <div class="px-4 py-2 text-sm"><div class="flex justify-between"><span class="font-medium" x-text="c.headline"></span><span class="badge bg-blue-100 text-blue-800" x-text="c.status"></span></div><div class="text-xs text-gray-500" x-text="c.at+' · '+c.count+' guests · by '+c.by"></div></div>
+          </template>
+          <p x-show="!db.campaigns.length" class="p-4 text-sm text-gray-400">No campaigns queued yet.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</template>
+
+      </div>
+    </main>
+  </div>
+
+  <!-- ============ MOBILE BOTTOM NAV ============ -->
+  <nav class="md:hidden fixed bottom-0 inset-x-0 bg-white border-t z-20 grid grid-cols-5 text-xs">
+    <template x-for="n in mobileNav" :key="n.id">
+      <button @click="go(n.id)" class="flex flex-col items-center py-2 gap-0.5" :class="view===n.id?'text-brand font-semibold':'text-gray-500'">
+        <span x-html="ico(n.icon)"></span><span class="truncate" style="max-width:4.5rem" x-text="n.short||n.label"></span>
+      </button>
+    </template>
+    <button @click="sidebarOpen=true" class="flex flex-col items-center py-2 gap-0.5 text-gray-500">
+      <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg><span>More</span>
+    </button>
+  </nav>
+
+  <!-- ============ TOASTS ============ -->
+  <div class="fixed z-50 top-4 right-4 left-4 sm:left-auto space-y-2" style="max-width:24rem;margin-left:auto">
+    <template x-for="t in toasts" :key="t.id">
+      <div class="fade-in rounded-xl shadow-lg px-4 py-3 text-sm font-medium text-white flex items-center gap-2" :class="{'bg-green-600':t.type==='success','bg-red-600':t.type==='error','bg-gray-800':t.type==='info'}">
+        <span x-text="t.type==='success'?'✓':t.type==='error'?'!':'ℹ'"></span><span x-text="t.msg"></span>
+      </div>
+    </template>
+  </div>
+</div>
+
+<script>
+/* ==========================================================================
+   1. UTILITIES & CONSTANTS
+========================================================================== */
+const STORE_KEY = 'phinik-oasis-demo-v1';
+const pad = n => String(n).padStart(2, '0');
+const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parseYmd = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const weekStart = d => { const x = new Date(d); x.setHours(0, 0, 0, 0); x.setDate(x.getDate() - ((x.getDay() + 6) % 7)); return x; }; // Monday
+const toMin = t => { const [h, m] = t.split(':').map(Number); return h * 60 + m; };
+const fromMin = m => { m = ((Math.round(m) % 1440) + 1440) % 1440; return pad(Math.floor(m / 60)) + ':' + pad(m % 60); };
+const uid = p => p + Math.random().toString(36).slice(2, 9);
+/** Deterministic PRNG so mock data is stable between resets */
+function rng(seed) { return function () { seed |= 0; seed = seed + 0x6D2B79F5 | 0; let t = Math.imul(seed ^ seed >>> 15, 1 | seed); t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+
+/** Shift definitions used by the rota, attendance & lateness checks */
+const SHIFTS = {
+  M: { label: 'Morning', start: '10:00', end: '16:00', hours: 6,  cls: 'bg-yellow-100 text-yellow-800 border-yellow-300' },
+  E: { label: 'Evening', start: '16:00', end: '23:00', hours: 7,  cls: 'bg-indigo-100 text-indigo-800 border-indigo-300' },
+  D: { label: 'Double',  start: '10:00', end: '23:00', hours: 12, cls: 'bg-purple-100 text-purple-800 border-purple-300' },
+};
+
+/** Latest unit price for an item = most recent purchase (falls back to catalogue base) */
+function latestPrice(db, name) {
+  let best = null;
+  for (const p of db.purchases) {
+    if (p.item !== name) continue;
+    if (!best || p.date > best.date || (p.date === best.date && (p.ts || 0) > (best.ts || 0))) best = p;
+  }
+  if (best) return best.price / best.qty;
+  const it = db.items.find(i => i.name === name);
+  return it ? it.base : 0;
+}
+
+/* Storage adapter — artifact environment provides window.storage.
+   Replace with localStorage / fetch('/api/state') when self-hosting. */
+const Store = {
+  async load() { if (!window.storage) return null; try { const r = await window.storage.get(STORE_KEY, false); return r && r.value ? JSON.parse(r.value) : null; } catch (e) { return null; } },
+  async save(data) { if (!window.storage) return false; try { const r = await window.storage.set(STORE_KEY, JSON.stringify(data), false); return !!r; } catch (e) { return false; } },
+};
+
+/* ==========================================================================
+   2. SEED / MOCK DATA (dates are generated relative to "today")
+========================================================================== */
+function seed() {
+  const r = rng(20260929);
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const T = ymd(today);
+  const ws = weekStart(today);
+  const nowH = new Date().getHours();
+
+  const staff = [
+    { id: 's1', name: 'Rohit Sharma', role: 'Manager', title: 'Restaurant Manager', phone: '98110 45621', joined: '2022-03-14', salary: 32000, active: true },
+    { id: 's2', name: 'Amit Kumar',   role: 'Waiter',  title: 'Senior Waiter', phone: '98730 11209', joined: '2023-07-01', salary: 14500, active: true },
+    { id: 's3', name: 'Priya Singh',  role: 'Waiter',  title: 'Waiter', phone: '98990 34812', joined: '2024-01-18', salary: 14000, active: true },
+    { id: 's4', name: 'Sameer Khan',  role: 'Waiter',  title: 'Waiter', phone: '97180 55230', joined: '2025-05-06', salary: 13500, active: true },
+    { id: 's5', name: 'Ravi Verma',   role: 'Chef',    title: 'Head Chef', phone: '98112 70045', joined: '2021-11-02', salary: 30000, active: true },
+    { id: 's6', name: 'Deepak Yadav', role: 'Chef',    title: 'Line Cook', phone: '98184 22917', joined: '2023-09-12', salary: 18000, active: true },
+    { id: 's7', name: 'Imran Ali',    role: 'Chef',    title: 'Tandoor Chef', phone: '98713 60482', joined: '2022-08-20', salary: 21000, active: true },
+    { id: 's8', name: 'Sunita Devi',  role: 'Cleaner', title: 'Housekeeping', phone: '96500 18834', joined: '2023-02-10', salary: 11000, active: true },
+    { id: 's9', name: 'Mohan Lal',    role: 'Cleaner', title: 'Dishwasher', phone: '95400 77261', joined: '2024-06-25', salary: 10500, active: true },
+  ];
+
+  // ---- Rota: 2 weeks back to 3 weeks ahead, each person has one rotating off-day
+  const base = { s1: 'M', s2: 'M', s3: 'E', s4: 'E', s5: 'E', s6: 'M', s7: 'E', s8: 'M', s9: 'E' };
+  const rota = {};
+  for (let i = -14; i < 21; i++) {
+    const d = addDays(ws, i), key = ymd(d), dow = (d.getDay() + 6) % 7, wk = Math.floor((i + 14) / 7);
+    rota[key] = {};
+    staff.forEach((s, k) => {
+      if ((k * 2 + dow) % 7 === 0) return; // day off
+      let sh = base[s.id];
+      if (s.role === 'Waiter' && wk % 2 === 1) sh = sh === 'M' ? 'E' : 'M';
+      if (dow >= 5 && ['s1', 's2', 's5'].includes(s.id)) sh = 'D'; // weekend doubles
+      rota[key][s.id] = sh;
+    });
+  }
+
+  // ---- Attendance: last week + this week up to today
+  const attendance = []; let ai = 1;
+  for (let d = addDays(ws, -7); d <= today; d = addDays(d, 1)) {
+    const key = ymd(d);
+    staff.forEach(s => {
+      const code = rota[key] && rota[key][s.id]; if (!code) return;
+      if (r() < 0.04) return; // occasional absence
+      const sh = SHIFTS[code];
+      let inM = toMin(sh.start) - 12 + Math.floor(r() * 18);
+      if (r() < 0.12) inM += 15 + Math.floor(r() * 20); // late arrival
+      const outM = toMin(sh.end) - 5 + Math.floor(r() * 25);
+      let out = fromMin(outM);
+      if (key === T) {
+        if (code === 'E' && nowH < 16) return;
+        if (code === 'D' || code === 'E' || (code === 'M' && nowH < 16)) out = null;
+      }
+      attendance.push({ id: 'a' + ai++, staffId: s.id, date: key, in: fromMin(inM), out, by: 'Self' });
+    });
+  }
+
+  // ---- Vendors & item catalogue
+  const vendors = [
+    { id: 'v1', name: 'Azadpur Fresh Veg Co.', cat: 'Vegetables', contact: 'Ramesh Gupta', phone: '98100 22341', terms: 'Cash on delivery', rating: 4 },
+    { id: 'v6', name: 'Green Leaf Organics', cat: 'Vegetables', contact: 'Neeraj Bhatia', phone: '98734 11920', terms: '7-day credit', rating: 3 },
+    { id: 'v2', name: 'Shree Krishna Dairy', cat: 'Dairy', contact: 'Mukesh Yadav', phone: '98991 55620', terms: 'Weekly credit', rating: 5 },
+    { id: 'v3', name: 'Al-Kareem Meat House', cat: 'Meat', contact: 'Salim Qureshi', phone: '98183 77410', terms: 'Cash on delivery', rating: 4 },
+    { id: 'v4', name: 'Delhi LPG Suppliers', cat: 'Gas', contact: 'Harish Chand', phone: '98711 90032', terms: 'Advance payment', rating: 3 },
+    { id: 'v5', name: 'Khari Baoli Spice Traders', cat: 'Dry Goods', contact: 'Anil Jain', phone: '98115 66780', terms: '15-day credit', rating: 4 },
+  ];
+  const vendorFor = { Vegetables: 'v1', Dairy: 'v2', Meat: 'v3', Gas: 'v4', 'Dry Goods': 'v5' };
+  // trend = weekly price drift used to create realistic inflation signals
+  const items = [
+    { name: 'Onion', unit: 'kg', cat: 'Vegetables', base: 32, qty: 25, trend: 0.05, freq: [0, 3] },
+    { name: 'Tomato', unit: 'kg', cat: 'Vegetables', base: 38, qty: 20, trend: 0.09, freq: [0, 3] },
+    { name: 'Potato', unit: 'kg', cat: 'Vegetables', base: 24, qty: 20, trend: 0, freq: [0, 3] },
+    { name: 'Coriander', unit: 'kg', cat: 'Vegetables', base: 90, qty: 2, trend: -0.04, freq: [0, 3] },
+    { name: 'Paneer', unit: 'kg', cat: 'Dairy', base: 380, qty: 8, trend: 0.02, freq: [0, 2, 4] },
+    { name: 'Milk', unit: 'L', cat: 'Dairy', base: 64, qty: 20, trend: 0, freq: [0, 2, 4] },
+    { name: 'Butter', unit: 'kg', cat: 'Dairy', base: 520, qty: 3, trend: 0.015, freq: [0, 4] },
+    { name: 'Cream', unit: 'L', cat: 'Dairy', base: 240, qty: 4, trend: 0, freq: [0, 4] },
+    { name: 'Chicken', unit: 'kg', cat: 'Meat', base: 230, qty: 15, trend: -0.02, freq: [1, 4] },
+    { name: 'Mutton', unit: 'kg', cat: 'Meat', base: 720, qty: 6, trend: 0.012, freq: [1, 4] },
+    { name: 'LPG Cylinder (19 kg)', unit: 'cyl', cat: 'Gas', base: 1780, qty: 3, trend: 0.01, freq: [2] },
+    { name: 'Basmati Rice', unit: 'kg', cat: 'Dry Goods', base: 110, qty: 25, trend: 0.01, freq: [0] },
+    { name: 'Cooking Oil', unit: 'L', cat: 'Dry Goods', base: 145, qty: 15, trend: 0.02, freq: [0] },
+    { name: 'Garam Masala', unit: 'kg', cat: 'Dry Goods', base: 900, qty: 1, trend: 0, freq: [0] },
+  ];
+
+  // ---- Purchases: 4 weeks of history
+  const purchases = []; let ts = 1;
+  for (let d = addDays(ws, -21); d <= today; d = addDays(d, 1)) {
+    const dow = (d.getDay() + 6) % 7;
+    const wAgo = Math.round((ws - weekStart(d)) / (7 * 864e5));
+    items.forEach(it => {
+      if (!it.freq.includes(dow)) return;
+      if (it.cat === 'Dry Goods' && wAgo % 2 === 1) return;
+      let vid = vendorFor[it.cat], mult = 1;
+      if (it.cat === 'Vegetables' && r() < 0.3) { vid = 'v6'; mult = 1.07; }
+      const unitP = it.base * (1 + it.trend * (3 - wAgo)) * (1 + (r() - 0.5) * 0.05) * mult;
+      let qty = it.qty * (0.8 + r() * 0.4);
+      qty = it.unit === 'cyl' ? Math.max(1, Math.round(qty)) : Math.round(qty * 2) / 2;
+      purchases.push({ id: 'p' + ts, ts: ts++, date: ymd(d), vendorId: vid, item: it.name, qty, unit: it.unit, price: Math.round(unitP * qty), notes: '', by: 's1' });
+    });
+  }
+
+  // ---- Recipes (menu item -> raw ingredients per plate)
+  const recipes = [
+    { id: 'r1', name: 'Paneer Butter Masala', category: 'Main Course · Veg', price: 340, ing: [{ item: 'Paneer', qty: 0.2 }, { item: 'Butter', qty: 0.03 }, { item: 'Cream', qty: 0.04 }, { item: 'Tomato', qty: 0.18 }, { item: 'Onion', qty: 0.08 }, { item: 'Garam Masala', qty: 0.005 }, { item: 'Cooking Oil', qty: 0.02 }] },
+    { id: 'r2', name: 'Butter Chicken', category: 'Main Course · Non-Veg', price: 420, ing: [{ item: 'Chicken', qty: 0.25 }, { item: 'Butter', qty: 0.04 }, { item: 'Cream', qty: 0.05 }, { item: 'Tomato', qty: 0.2 }, { item: 'Garam Masala', qty: 0.006 }, { item: 'Cooking Oil', qty: 0.02 }] },
+    { id: 'r3', name: 'Veg Dum Biryani', category: 'Rice & Biryani', price: 290, ing: [{ item: 'Basmati Rice', qty: 0.16 }, { item: 'Onion', qty: 0.1 }, { item: 'Potato', qty: 0.08 }, { item: 'Cooking Oil', qty: 0.03 }, { item: 'Garam Masala', qty: 0.005 }, { item: 'Coriander', qty: 0.01 }] },
+    { id: 'r4', name: 'Mutton Rogan Josh', category: 'Main Course · Non-Veg', price: 520, ing: [{ item: 'Mutton', qty: 0.25 }, { item: 'Onion', qty: 0.12 }, { item: 'Tomato', qty: 0.06 }, { item: 'Cooking Oil', qty: 0.04 }, { item: 'Garam Masala', qty: 0.008 }] },
+    { id: 'r5', name: 'Jeera Aloo', category: 'Sides', price: 220, ing: [{ item: 'Potato', qty: 0.25 }, { item: 'Cooking Oil', qty: 0.03 }, { item: 'Coriander', qty: 0.01 }, { item: 'Garam Masala', qty: 0.003 }] },
+  ];
+
+  const db = { v: 1, staff, rota, attendance, vendors, items, purchases, recipes, waste: [], feedback: [], contacts: [], campaigns: [], activity: [] };
+
+  // ---- Waste log
+  const plate = rid => { const rc = recipes.find(x => x.id === rid); return rc.ing.reduce((t, g) => t + g.qty * latestPrice(db, g.item), 0); };
+  const wasteSeed = [
+    [0, 'raw', 'Tomato', 1.5, 'Spoilage', 's6', 'Soft & bruised batch'], [1, 'raw', 'Paneer', 0.4, 'Expired', 's5', ''],
+    [1, 'dish', 'r2', 1, 'Customer return', 's2', 'Too spicy for guest'], [2, 'raw', 'Cream', 0.5, 'Spoilage', 's6', 'Left out of cold room'],
+    [3, 'raw', 'Chicken', 0.8, 'Over-prep', 's7', ''], [4, 'raw', 'Onion', 2, 'Spoilage', 's8', ''],
+    [5, 'dish', 'r3', 3, 'Over-prep', 's5', 'Slow Sunday lunch'], [6, 'raw', 'Milk', 3, 'Spoilage', 's6', 'Curdled'],
+    [8, 'raw', 'Coriander', 0.5, 'Spoilage', 's6', ''], [9, 'raw', 'Basmati Rice', 1.2, 'Burnt / cooking error', 's7', ''],
+  ];
+  wasteSeed.forEach(([ago, kind, x, qty, reason, by, notes], i) => {
+    const isDish = kind === 'dish';
+    const item = isDish ? recipes.find(rc => rc.id === x).name : x;
+    const unit = isDish ? 'portion' : items.find(it => it.name === x).unit;
+    const cost = isDish ? qty * plate(x) : qty * latestPrice(db, x);
+    db.waste.push({ id: 'w' + i, date: ymd(addDays(today, -ago)), time: pad(12 + (i % 9)) + ':' + pad((i * 17) % 60), kind, item, qty, unit, reason, cost: Math.round(cost * 100) / 100, by, notes });
+  });
+
+  // ---- Private feedback
+  const fd = ago => ymd(addDays(today, -ago));
+  db.feedback = [
+    { id: 'f1', date: fd(0), time: '13:42', table: 'T4', rating: 2, category: 'Wait time', message: 'Waited almost 35 minutes for our main course. Food was good but the delay spoiled our lunch break.', name: 'Neha Kapoor', phone: '9899012345', optIn: true, status: 'new', replies: [], publicOk: false },
+    { id: 'f2', date: fd(1), time: '21:15', table: 'T9', rating: 5, category: 'Food', message: 'The mutton rogan josh was outstanding — best we have had in the area. Staff were very warm.', name: 'Arjun Mehta', phone: '9810098100', optIn: true, status: 'resolved', replies: [{ by: 'Pawan', text: 'Thank you Arjun ji! Chef Ravi was thrilled to hear this. See you again soon.', at: fd(1) + ' 22:05' }], publicOk: true },
+    { id: 'f3', date: fd(1), time: '20:02', table: 'T2', rating: 3, category: 'Cleanliness', message: 'Washroom needs attention, the soap dispenser was empty.', name: '', phone: '', optIn: false, status: 'in-progress', replies: [{ by: 'Rohit Sharma', text: 'Internal note: housekeeping checklist updated, hourly washroom check added.', at: fd(0) + ' 10:15' }], publicOk: false },
+    { id: 'f4', date: fd(2), time: '14:30', table: 'T11', rating: 4, category: 'Service', message: 'Priya was very attentive. Would love to see more vegetarian starters on the menu.', name: 'Kavita Rao', phone: '9711223344', optIn: true, status: 'new', replies: [], publicOk: false },
+    { id: 'f5', date: fd(3), time: '21:48', table: 'T6', rating: 1, category: 'Food', message: 'Butter chicken was too salty and arrived lukewarm.', name: 'Vikram S.', phone: '9988776655', optIn: true, status: 'resolved', replies: [{ by: 'Pawan', text: 'Vikram ji, sincere apologies. We have recalibrated the recipe — your next butter chicken is on the house.', at: fd(3) + ' 22:30' }], publicOk: false },
+    { id: 'f6', date: fd(5), time: '20:10', table: 'T1', rating: 5, category: 'Ambience', message: 'Lovely ambience for a family dinner, the outdoor seating is beautiful in this weather.', name: 'Sanjay Gupta', phone: '9654321098', optIn: true, status: 'new', replies: [], publicOk: false },
+  ];
+
+  // ---- CRM contacts (WhatsApp opt-in list)
+  const contacts = [
+    ['Neha Kapoor', '9899012345', 0, 2, true], ['Arjun Mehta', '9810098100', 1, 9, true], ['Kavita Rao', '9711223344', 2, 1, true],
+    ['Vikram S.', '9988776655', 3, 3, true], ['Sanjay Gupta', '9654321098', 5, 6, true], ['Meera Iyer', '9876501234', 41, 4, true],
+    ['Rahul Bansal', '9810234567', 62, 7, true], ['Anjali Verma', '9899876543', 12, 1, true], ['Karan Malhotra', '9811122233', 35, 2, true],
+    ['Pooja Sethi', '9717345678', 8, 5, false],
+  ];
+  db.contacts = contacts.map(([name, phone, lv, visits, optIn]) => ({ name, phone, lastVisit: fd(lv), visits, optIn }));
+  db.activity = [{ at: T + ' 09:00', who: 'System', text: 'loaded demo data' }];
+  return db;
+}
+
+/* ==========================================================================
+   3. ALPINE COMPONENT
+========================================================================== */
+function app() {
+  return {
+    db: seed(),
+    SHIFTS,
+    session: { role: 'admin', staffId: null },
+    lastStaff: 's2',
+    view: 'dashboard',
+    sidebarOpen: false,
+    toasts: [],
+    now: new Date(),
+    persistOk: false,
+    resetArmed: false,
+    _saveTimer: null,
+    _qrCache: {},
+
+    // --- per-module UI state
+    dir: { q: '', role: 'All', showForm: false, form: { name: '', role: 'Waiter', phone: '', salary: '' } },
+    rotaWeek: 0,
+    att: { date: ymd(new Date()) },
+    tips: { period: 'this', pool: 8500, rate: 15, bonus: 200, roles: ['Waiter', 'Chef', 'Cleaner'] },
+    ven: { cat: 'All', showForm: false, form: { name: '', cat: 'Vegetables', contact: '', phone: '' } },
+    po: { form: { date: ymd(new Date()), vendorId: 'v1', item: 'Onion', qty: '', price: '', notes: '' }, filterCat: 'All', range: '4w', flash: null },
+    rec: { sel: 'r1', newName: '', newPrice: '', addItem: 'Onion', addQty: '' },
+    wst: { form: { kind: 'raw', item: 'Tomato', dish: 'r1', qty: '', reason: 'Spoilage', notes: '' }, flash: null },
+    fb: { filter: 'all', sel: 'f1', reply: '', lowOnly: false },
+    qr: { table: null, step: 'form', form: {}, last: null },
+    wa: { type: 'festive', headline: 'Diwali Dhamaka Dinner', discount: 20, validTill: ymd(addDays(new Date(), 10)), cta: '+91 98110 45621', tone: 'english', emoji: true, segment: 'all' },
+
+    // --- constants
+    cats: ['Vegetables', 'Dairy', 'Meat', 'Gas', 'Dry Goods'],
+    catColor: { Vegetables: '#16a34a', Dairy: '#3b82f6', Meat: '#dc2626', Gas: '#f59e0b', 'Dry Goods': '#8b5cf6' },
+    wasteReasons: ['Spoilage', 'Over-prep', 'Burnt / cooking error', 'Customer return', 'Expired', 'Dropped / spilled'],
+    fbCategories: ['Food', 'Service', 'Ambience', 'Cleanliness', 'Wait time', 'Other'],
+    tables: ['T1', 'T2', 'T3', 'T4', 'T5', 'T6', 'T7', 'T8', 'T9', 'T10', 'T11', 'T12'],
+    waTypes: { festive: 'Festival offer', weekend: 'Weekend special', newmenu: 'New menu launch', winback: 'Win-back (we miss you)', recovery: 'Service recovery', birthday: 'Birthday month' },
+    waHeadlines: { festive: 'Diwali Dhamaka Dinner', weekend: 'Weekend Grand Buffet', newmenu: 'New Tandoor Specials', winback: 'We Miss You!', recovery: 'A Little Something to Make It Right', birthday: 'Birthday Month Treat' },
+    waSegments: { all: 'All opted-in', regular: 'Regulars (5+ visits)', lapsed: 'Lapsed (30+ days)', new: 'First-timers', complaint: 'Recent complainants' },
+
+    /* ---- RBAC: every module declares which roles may open it ---- */
+    nav: [
+      { id: 'dashboard', label: 'Dashboard', short: 'Home', icon: 'home', group: 'Overview', roles: ['admin', 'manager', 'staff'] },
+      { id: 'staff', label: 'Staff Directory', short: 'Staff', icon: 'users', group: 'EMS · Staff', roles: ['admin', 'manager'] },
+      { id: 'rota', label: 'Shift Rota', short: 'Rota', icon: 'calendar', group: 'EMS · Staff', roles: ['admin', 'manager', 'staff'] },
+      { id: 'attendance', label: 'Check-in / Out', short: 'Check-in', icon: 'clock', group: 'EMS · Staff', roles: ['admin', 'manager', 'staff'] },
+      { id: 'tips', label: 'Tips & Incentives', short: 'Tips', icon: 'cash', group: 'EMS · Staff', roles: ['admin', 'manager'] },
+      { id: 'vendors', label: 'Vendors', short: 'Vendors', icon: 'store', group: 'PMS · Procurement', roles: ['admin', 'manager'] },
+      { id: 'purchases', label: 'Purchase Orders', short: 'Purchases', icon: 'clipboard', group: 'PMS · Procurement', roles: ['admin', 'manager'] },
+      { id: 'prices', label: 'Price Tracker', short: 'Prices', icon: 'trending', group: 'PMS · Procurement', roles: ['admin', 'manager'] },
+      { id: 'recipes', label: 'Recipe Costing', short: 'Recipes', icon: 'book', group: 'Kitchen Intelligence', roles: ['admin', 'manager'] },
+      { id: 'waste', label: 'Waste Log', short: 'Waste', icon: 'trash', group: 'Kitchen Intelligence', roles: ['admin', 'manager', 'staff'] },
+      { id: 'feedback', label: 'Feedback Inbox', short: 'Feedback', icon: 'chat', group: 'CRM · Guests', roles: ['admin', 'manager'] },
+      { id: 'whatsapp', label: 'WhatsApp Campaigns', short: 'WhatsApp', icon: 'speaker', group: 'CRM · Guests', roles: ['admin', 'manager'] },
+      { id: 'qr', label: 'Table QR · Guest view', short: 'QR', icon: 'qr', group: 'CRM · Guests', roles: ['admin', 'manager', 'staff'] },
+    ],
+
+    /* ---------------- lifecycle ---------------- */
+    async init() {
+      const saved = await Store.load();
+      if (saved && saved.v === 1) this.db = saved;
+      this.persistOk = !!window.storage;
+      this.$watch('db', () => this.queueSave());
+      this.$watch('po.form.vendorId', () => { const it = this.poItems; if (!it.find(i => i.name === this.po.form.item)) this.po.form.item = it[0] ? it[0].name : ''; });
+      this.$watch('wa.type', t => { this.wa.headline = this.waHeadlines[t]; if (t === 'recovery') this.wa.segment = 'complaint'; });
+      setInterval(() => { this.now = new Date(); }, 15000);
+    },
+    queueSave() {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = setTimeout(async () => { this.persistOk = await Store.save(this.db); }, 400);
+    },
+    resetDemo() {
+      if (!this.resetArmed) { this.resetArmed = true; setTimeout(() => this.resetArmed = false, 3000); return; }
+      this.resetArmed = false; this.db = seed(); this.view = 'dashboard'; this.toast('Demo data reset', 'info');
+    },
+
+    /* ================= 3a. SESSION & RBAC ================= */
+    get isAdmin() { return this.session.role === 'admin'; },
+    get isManager() { return this.session.role === 'manager'; },
+    get isStaff() { return this.session.role === 'staff'; },
+    get me() { return this.db.staff.find(s => s.id === this.session.staffId); },
+    get userName() { return this.isAdmin ? 'Pawan' : (this.me ? this.me.name : '—'); },
+    get roleKey() { return this.isAdmin ? 'admin' : this.session.role + ':' + this.session.staffId; },
+    get roleLabel() { return { admin: 'Owner / Admin', manager: 'Manager', staff: 'Staff' }[this.session.role]; },
+    get roleBlurb() {
+      return {
+        admin: 'Full access · financial summaries · wages · recipe margins · delete rights',
+        manager: 'Assign shifts · log purchases · manage vendors, waste & feedback · no wages or P&L',
+        staff: 'Own shifts only · self check-in/out · log waste · guest QR demo',
+      }[this.session.role];
+    },
+    setRole(v) {
+      if (v === 'admin') this.session = { role: 'admin', staffId: null };
+      else { const [r, id] = v.split(':'); this.session = { role: r, staffId: id }; if (r === 'staff') this.lastStaff = id; }
+      if (!this.can(this.view)) this.view = 'dashboard';
+      this.sidebarOpen = false;
+      this.toast('Switched to ' + this.userName + ' · ' + this.roleLabel, 'info');
+    },
+    quickRole(r) { this.setRole(r === 'admin' ? 'admin' : r === 'manager' ? 'manager:s1' : 'staff:' + this.lastStaff); },
+    can(id) { const n = this.nav.find(x => x.id === id); return !!n && n.roles.includes(this.session.role); },
+    go(id) {
+      if (!this.can(id)) { this.toast('Locked for ' + this.roleLabel + ' role', 'error'); return; }
+      this.view = id; this.sidebarOpen = false;
+      if (this.$refs.main) this.$refs.main.scrollTop = 0;
+    },
+    get navGroups() {
+      const g = [];
+      this.nav.forEach(n => { let x = g.find(y => y.name === n.group); if (!x) { x = { name: n.group, items: [] }; g.push(x); } x.items.push(n); });
+      return g;
+    },
+    get currentNav() { return this.nav.find(n => n.id === this.view) || this.nav[0]; },
+    get mobileNav() {
+      const m = { admin: ['dashboard', 'purchases', 'waste', 'feedback'], manager: ['dashboard', 'rota', 'purchases', 'feedback'], staff: ['dashboard', 'attendance', 'rota', 'waste'] };
+      return m[this.session.role].map(id => this.nav.find(n => n.id === id));
+    },
+
+    /* ================= 3b. EMS ================= */
+    hourly(s) { return s.salary / 208; }, // 26 days × 8 h
+    get dirRows() {
+      const q = this.dir.q.toLowerCase();
+      return this.db.staff.filter(s => (this.dir.role === 'All' || s.role === this.dir.role) && (!q || s.name.toLowerCase().includes(q) || (s.phone || '').includes(q)));
+    },
+    addStaff() {
+      const f = this.dir.form;
+      if (!f.name.trim() || !(+f.salary > 0)) return this.toast('Name and salary are required', 'error');
+      this.db.staff.push({ id: uid('s'), name: f.name.trim(), role: f.role, title: f.role, phone: f.phone, joined: this.today, salary: +f.salary, active: true });
+      this.log('added staff member ' + f.name.trim());
+      this.toast(f.name.trim() + ' added to directory');
+      this.dir.form = { name: '', role: 'Waiter', phone: '', salary: '' }; this.dir.showForm = false;
+    },
+    // Rota
+    get canEditRota() { return !this.isStaff; },
+    get rotaDays() { const ws = addDays(weekStart(this.now), this.rotaWeek * 7); return [...Array(7)].map((_, i) => ymd(addDays(ws, i))); },
+    get weekLabel() { const d = this.rotaDays; return this.fmtDate(d[0]) + ' – ' + this.fmtDate(d[6]); },
+    get rotaStaff() { return this.isStaff ? this.db.staff.filter(s => s.id === this.session.staffId) : this.db.staff.filter(s => s.active); },
+    shiftOf(date, sid) { return (this.db.rota[date] || {})[sid] || ''; },
+    cycleShift(date, sid) {
+      if (!this.canEditRota) return;
+      const order = ['', 'M', 'E', 'D'];
+      const nx = order[(order.indexOf(this.shiftOf(date, sid)) + 1) % 4];
+      if (!this.db.rota[date]) this.db.rota[date] = {};
+      if (nx) this.db.rota[date][sid] = nx; else delete this.db.rota[date][sid];
+      this.db.rota = { ...this.db.rota }; // ensure reactivity for nested keys
+    },
+    weekHours(sid) { return this.rotaDays.reduce((t, d) => t + (this.shiftOf(d, sid) ? SHIFTS[this.shiftOf(d, sid)].hours : 0), 0); },
+    weekHoursFor(sid, offset) { const ws = addDays(weekStart(this.now), offset * 7); let t = 0; for (let i = 0; i < 7; i++) { const c = this.shiftOf(ymd(addDays(ws, i)), sid); if (c) t += SHIFTS[c].hours; } return t; },
+    cov(date, t, role) { return this.db.staff.filter(s => s.active && s.role === role && [t, 'D'].includes(this.shiftOf(date, s.id))).length; },
+    copyPrevWeek() {
+      const rota = { ...this.db.rota };
+      this.rotaDays.forEach(d => { rota[d] = { ...(rota[ymd(addDays(parseYmd(d), -7))] || {}) }; });
+      this.db.rota = rota; this.log('copied previous week rota into ' + this.weekLabel); this.toast('Previous week copied');
+    },
+    clearWeek() {
+      const rota = { ...this.db.rota }; this.rotaDays.forEach(d => { rota[d] = {}; });
+      this.db.rota = rota; this.log('cleared rota for ' + this.weekLabel); this.toast('Week cleared', 'info');
+    },
+    get myUpcoming() { if (!this.me) return []; return [...Array(7)].map((_, i) => ymd(addDays(this.now, i))).map(d => ({ d, sh: this.shiftOf(d, this.me.id) })); },
+    // Attendance
+    get clock() { return this.now.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' }); },
+    nowHM() { const d = new Date(); return pad(d.getHours()) + ':' + pad(d.getMinutes()); },
+    openRecord(sid) { return this.db.attendance.find(a => a.staffId === sid && !a.out); },
+    checkIn(sid) {
+      if (this.openRecord(sid)) return this.toast('Already checked in', 'error');
+      this.now = new Date();
+      const self = sid === this.session.staffId;
+      this.db.attendance.push({ id: uid('a'), staffId: sid, date: this.today, in: this.nowHM(), out: null, by: self ? 'Self' : this.userName });
+      const rec = this.openRecord(sid);
+      this.toast(this.staffName(sid) + ' checked in at ' + rec.in + (this.isLate(rec) ? ' (late)' : ''), this.isLate(rec) ? 'info' : 'success');
+      this.log('checked in ' + this.staffName(sid));
+    },
+    checkOut(sid) {
+      const r = this.openRecord(sid); if (!r) return;
+      r.out = this.nowHM(); this.now = new Date();
+      this.toast(this.staffName(sid) + ' checked out · ' + this.hrs(r).toFixed(1) + ' h');
+      this.log('checked out ' + this.staffName(sid));
+    },
+    hrs(a) { if (!a.out) return 0; let m = toMin(a.out) - toMin(a.in); if (m < 0) m += 1440; return m / 60; },
+    liveHrs(a) {
+      if (!a) return 0; if (a.out) return this.hrs(a);
+      if (a.date !== this.today) return 0;
+      return Math.max(0, toMin(pad(this.now.getHours()) + ':' + pad(this.now.getMinutes())) - toMin(a.in)) / 60;
+    },
+    isLate(a) { const sh = this.shiftOf(a.date, a.staffId); return !!sh && toMin(a.in) > toMin(SHIFTS[sh].start) + 10; },
+    attStatus(sid) {
+      const open = this.openRecord(sid);
+      if (open) return { k: 'on', t: 'On duty since ' + open.in, short: 'On duty' };
+      const done = this.db.attendance.find(a => a.staffId === sid && a.date === this.today && a.out);
+      if (done) return { k: 'done', t: 'Done · ' + done.in + '–' + done.out, short: 'Done' };
+      return { k: 'off', t: 'Not checked in yet', short: 'Not in' };
+    },
+    get scheduledToday() { return this.db.staff.filter(s => s.active && this.shiftOf(this.today, s.id)); },
+    get onDutyNow() { return this.db.staff.filter(s => this.openRecord(s.id)).length; },
+    get attendanceBoard() { return this.db.staff.filter(s => s.active).sort((a, b) => (this.shiftOf(this.today, b.id) ? 1 : 0) - (this.shiftOf(this.today, a.id) ? 1 : 0)); },
+    get attLog() { return this.db.attendance.filter(a => a.date === this.att.date).sort((a, b) => a.in.localeCompare(b.in)); },
+    get myAttendance() { return this.me ? this.db.attendance.filter(a => a.staffId === this.me.id).sort((a, b) => b.date.localeCompare(a.date)).slice(0, 14) : []; },
+    hoursRange(sid, from, to) { return this.db.attendance.filter(a => a.staffId === sid && a.date >= from && a.date <= to).reduce((t, a) => t + this.liveHrs(a), 0); },
+    // Tips & incentives
+    get tipRange() { const ws = weekStart(this.now); const s = this.tips.period === 'this' ? ws : addDays(ws, -7); return { from: ymd(s), to: ymd(addDays(s, 6)) }; },
+    get tipRows() {
+      const { from, to } = this.tipRange;
+      const rows = this.db.staff.filter(s => s.active && this.tips.roles.includes(s.role)).map(s => {
+        const recs = this.db.attendance.filter(a => a.staffId === s.id && a.date >= from && a.date <= to && a.out);
+        return { s, recs, hours: recs.reduce((t, a) => t + this.hrs(a), 0), late: recs.filter(a => this.isLate(a)).length, shifts: recs.length };
+      });
+      const total = rows.reduce((t, r) => t + r.hours, 0);
+      rows.forEach(r => {
+        r.tip = total ? (+this.tips.pool || 0) * r.hours / total : 0;
+        r.inc = r.hours * (+this.tips.rate || 0);
+        r.bonus = r.late === 0 && r.shifts > 0 ? (+this.tips.bonus || 0) : 0;
+        r.total = r.tip + r.inc + r.bonus;
+      });
+      return rows.sort((a, b) => b.total - a.total);
+    },
+    get tipTotals() { const r = this.tipRows; return { hours: r.reduce((t, x) => t + x.hours, 0), total: r.reduce((t, x) => t + x.total, 0) }; },
+    tipSummary() {
+      return `Phinik Oasis · Tips & incentives (${this.fmtDate(this.tipRange.from)}–${this.fmtDate(this.tipRange.to)})\n` +
+        this.tipRows.map(r => `${r.s.name}: ${r.hours.toFixed(1)}h → ${this.inr(r.total)}`).join('\n') + `\nTotal: ${this.inr(this.tipTotals.total)}`;
+    },
+
+    /* ================= 3c. PMS ================= */
+    itemInfo(name) { return this.db.items.find(i => i.name === name); },
+    latestPrice(name) { return latestPrice(this.db, name); },
+    vendorName(id) { const v = this.db.vendors.find(x => x.id === id); return v ? v.name : '—'; },
+    get filteredVendors() { return this.db.vendors.filter(v => this.ven.cat === 'All' || v.cat === this.ven.cat); },
+    vendorSpend(vid) { const from = ymd(addDays(this.now, -29)); return this.db.purchases.filter(p => p.vendorId === vid && p.date >= from).reduce((t, p) => t + p.price, 0); },
+    vendorPOs(vid) { const from = ymd(addDays(this.now, -29)); return this.db.purchases.filter(p => p.vendorId === vid && p.date >= from).length; },
+    addVendor() {
+      const f = this.ven.form; if (!f.name.trim()) return;
+      this.db.vendors.push({ id: uid('v'), name: f.name.trim(), cat: f.cat, contact: f.contact, phone: f.phone, terms: 'Cash on delivery', rating: 3 });
+      this.log('added vendor ' + f.name.trim()); this.toast('Vendor saved');
+      this.ven.form = { name: '', cat: 'Vegetables', contact: '', phone: '' }; this.ven.showForm = false;
+    },
+    get poVendor() { return this.db.vendors.find(v => v.id === this.po.form.vendorId); },
+    get poItems() { const v = this.poVendor; return this.db.items.filter(i => !v || i.cat === v.cat); },
+    get poUnitPrice() { const q = +this.po.form.qty, p = +this.po.form.price; return q > 0 && p > 0 ? p / q : 0; },
+    get poDelta() { const u = this.poUnitPrice; if (!u) return null; const last = this.latestPrice(this.po.form.item); return last ? (u - last) / last * 100 : null; },
+    addPurchase() {
+      const f = this.po.form, it = this.itemInfo(f.item);
+      if (!it || !(+f.qty > 0) || !(+f.price > 0)) return this.toast('Enter a valid item, quantity and price', 'error');
+      const delta = this.poDelta;
+      const id = uid('p');
+      this.db.purchases.push({ id, ts: Date.now(), date: f.date || this.today, vendorId: f.vendorId, item: f.item, qty: +f.qty, unit: it.unit, price: +f.price, notes: f.notes, by: this.session.staffId || 'admin' });
+      this.po.flash = id; setTimeout(() => { this.po.flash = null; }, 2500);
+      this.log(`logged purchase: ${f.qty} ${it.unit} ${f.item} for ${this.inr(+f.price)}`);
+      this.toast(`${f.item} logged · ${this.inr(+f.price)}` + (delta !== null && Math.abs(delta) >= 5 ? ` (${delta > 0 ? '▲' : '▼'}${Math.abs(delta).toFixed(1)}%)` : ''), delta > 5 ? 'info' : 'success');
+      this.po.form.qty = ''; this.po.form.price = ''; this.po.form.notes = '';
+    },
+    deletePurchase(id) { this.db.purchases = this.db.purchases.filter(p => p.id !== id); this.log('deleted a purchase entry'); this.toast('Purchase deleted', 'info'); },
+    get poRows() {
+      const from = this.po.range === '1w' ? ymd(weekStart(this.now)) : this.po.range === '4w' ? ymd(addDays(weekStart(this.now), -21)) : '0000';
+      return this.db.purchases
+        .filter(p => p.date >= from && (this.po.filterCat === 'All' || (this.itemInfo(p.item) || {}).cat === this.po.filterCat))
+        .sort((a, b) => b.date.localeCompare(a.date) || (b.ts || 0) - (a.ts || 0));
+    },
+    get poCatTotals() { const m = {}; this.poRows.forEach(p => { const c = (this.itemInfo(p.item) || {}).cat; m[c] = (m[c] || 0) + p.price; }); return m; },
+    // Price tracker
+    weekIdx(dateStr) { return Math.round((weekStart(this.now) - weekStart(parseYmd(dateStr))) / (7 * 864e5)); },
+    get weekLabels() { const ws = weekStart(this.now); return [3, 2, 1, 0].map(w => w === 0 ? 'This wk' : w === 1 ? 'Last wk' : this.fmtDate(ymd(addDays(ws, -7 * w)))); },
+    get priceRows() {
+      return this.db.items.map(it => {
+        const series = [3, 2, 1, 0].map(w => {
+          const ps = this.db.purchases.filter(p => p.item === it.name && this.weekIdx(p.date) === w);
+          const q = ps.reduce((t, p) => t + p.qty, 0), v = ps.reduce((t, p) => t + p.price, 0);
+          return q ? v / q : null;
+        });
+        const vals = series.filter(x => x !== null);
+        const latest = vals[vals.length - 1], prev = vals[vals.length - 2], first = vals[0];
+        return { it, series, latest, wow: (latest && prev) ? (latest - prev) / prev * 100 : null, m4: (vals.length > 1) ? (latest - first) / first * 100 : null, max: Math.max(...vals), min: Math.min(...vals) };
+      });
+    },
+    get inflationAlerts() { return this.priceRows.filter(r => r.wow !== null && r.wow > 5).sort((a, b) => b.wow - a.wow); },
+    get basketInflation() {
+      let w = 0, s = 0;
+      this.priceRows.forEach(r => { if (r.wow === null) return; const spend = this.db.purchases.filter(p => p.item === r.it.name && this.weekIdx(p.date) <= 3).reduce((t, p) => t + p.price, 0); w += spend; s += spend * r.wow; });
+      return w ? s / w : 0;
+    },
+    get weeklySpend() {
+      return [3, 2, 1, 0].map((w, i) => {
+        const ps = this.db.purchases.filter(p => this.weekIdx(p.date) === w);
+        const byCat = {}; ps.forEach(p => { const c = (this.itemInfo(p.item) || {}).cat; byCat[c] = (byCat[c] || 0) + p.price; });
+        return { label: this.weekLabels[i], total: ps.reduce((t, p) => t + p.price, 0), byCat };
+      });
+    },
+    get maxWeekSpend() { return Math.max(1, ...this.weeklySpend.map(w => w.total)); },
+
+    /* ================= 3d. KITCHEN ================= */
+    lineCost(g) { return (+g.qty || 0) * this.latestPrice(g.item); },
+    plateCost(r) { return r.ing.reduce((t, g) => t + this.lineCost(g), 0); },
+    foodPct(r) { return r.price ? this.plateCost(r) / r.price * 100 : 0; },
+    pctCls(p) { return p < 30 ? 'bg-green-100 text-green-800' : p <= 38 ? 'bg-yellow-100 text-yellow-800' : 'bg-red-100 text-red-800'; },
+    get selRecipe() { return this.db.recipes.find(r => r.id === this.rec.sel) || this.db.recipes[0]; },
+    fmtQty(q, unit) { if ((unit === 'kg' || unit === 'L') && q < 1) return Math.round(q * 1000) + (unit === 'kg' ? ' g' : ' ml'); return (+(+q).toFixed(2)) + ' ' + unit; },
+    addIngredient() {
+      const q = +this.rec.addQty; if (!(q > 0)) return this.toast('Enter a quantity', 'error');
+      const r = this.selRecipe, ex = r.ing.find(g => g.item === this.rec.addItem);
+      if (ex) ex.qty = +(ex.qty + q).toFixed(3); else r.ing.push({ item: this.rec.addItem, qty: q });
+      this.rec.addQty = ''; this.log(`updated recipe ${r.name}`); this.toast('Ingredient added');
+    },
+    addRecipe() {
+      if (!this.rec.newName.trim() || !(+this.rec.newPrice > 0)) return;
+      const id = uid('r');
+      this.db.recipes.push({ id, name: this.rec.newName.trim(), category: 'New item', price: +this.rec.newPrice, ing: [] });
+      this.rec.sel = id; this.log('created recipe ' + this.rec.newName.trim()); this.rec.newName = ''; this.rec.newPrice = '';
+      this.toast('Dish created — add its ingredients');
+    },
+    deleteRecipe(id) {
+      if (this.db.recipes.length <= 1) return;
+      const r = this.db.recipes.find(x => x.id === id);
+      this.db.recipes = this.db.recipes.filter(x => x.id !== id); this.rec.sel = this.db.recipes[0].id;
+      this.log('deleted recipe ' + r.name); this.toast('Dish removed', 'info');
+    },
+    // Waste
+    get wUnit() { return this.wst.form.kind === 'dish' ? 'portions' : ((this.itemInfo(this.wst.form.item) || {}).unit || ''); },
+    get wCost() {
+      const q = +this.wst.form.qty || 0;
+      if (this.wst.form.kind === 'dish') { const r = this.db.recipes.find(x => x.id === this.wst.form.dish); return r ? q * this.plateCost(r) : 0; }
+      return q * this.latestPrice(this.wst.form.item);
+    },
+    addWaste() {
+      const f = this.wst.form, q = +f.qty;
+      if (!(q > 0)) return this.toast('Enter a quantity', 'error');
+      const isDish = f.kind === 'dish';
+      const item = isDish ? this.db.recipes.find(x => x.id === f.dish).name : f.item;
+      const id = uid('w');
+      this.db.waste.push({ id, date: this.today, time: this.nowHM(), kind: f.kind, item, qty: q, unit: isDish ? 'portion' : this.wUnit, reason: f.reason, cost: Math.round(this.wCost * 100) / 100, by: this.session.staffId || 'admin', notes: f.notes });
+      this.wst.flash = id; setTimeout(() => { this.wst.flash = null; }, 2500);
+      this.log(`logged waste: ${q} ${isDish ? 'portion(s)' : this.wUnit} ${item} (${f.reason})`);
+      this.toast(`Waste logged · ${this.inr2(this.db.waste[this.db.waste.length - 1].cost)}`);
+      f.qty = ''; f.notes = '';
+    },
+    deleteWaste(id) { this.db.waste = this.db.waste.filter(w => w.id !== id); this.toast('Entry deleted', 'info'); },
+    get wasteRows() {
+      let r = this.db.waste.slice();
+      if (this.isStaff) r = r.filter(w => w.by === this.session.staffId);
+      return r.sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time));
+    },
+    get waste7List() { const from = ymd(addDays(this.now, -6)); return this.db.waste.filter(w => w.date >= from); },
+    get waste7() { return this.waste7List.reduce((t, w) => t + w.cost, 0); },
+    get wasteByReason() {
+      const m = {};
+      this.waste7List.forEach(w => { m[w.reason] = m[w.reason] || { reason: w.reason, cost: 0, n: 0 }; m[w.reason].cost += w.cost; m[w.reason].n++; });
+      const arr = Object.values(m).sort((a, b) => b.cost - a.cost);
+      const max = Math.max(1, ...arr.map(a => a.cost)); arr.forEach(a => a.pct = a.cost / max * 100);
+      return arr;
+    },
+    get topWasted() {
+      const m = {}; this.waste7List.forEach(w => { m[w.item] = (m[w.item] || 0) + w.cost; });
+      return Object.entries(m).map(([item, cost]) => ({ item, cost })).sort((a, b) => b.cost - a.cost).slice(0, 6);
+    },
+
+    /* ================= 3e. CRM ================= */
+    get sortedFeedback() { return this.db.feedback.slice().sort((a, b) => (b.date + b.time).localeCompare(a.date + a.time)); },
+    get fbList() { return this.sortedFeedback.filter(f => (this.fb.filter === 'all' || f.status === this.fb.filter) && (!this.fb.lowOnly || f.rating <= 3)); },
+    get fbSel() { return this.db.feedback.find(f => f.id === this.fb.sel); },
+    fbCount(s) { return this.db.feedback.filter(f => f.status === s).length; },
+    get openFb() { return this.db.feedback.filter(f => f.status !== 'resolved').length; },
+    get fb30() { const from = ymd(addDays(this.now, -29)); return this.db.feedback.filter(f => f.date >= from); },
+    get avgRating30() { const l = this.fb30; return l.length ? l.reduce((t, f) => t + f.rating, 0) / l.length : 0; },
+    statusLabel(s) { return { new: 'New', 'in-progress': 'In progress', resolved: 'Resolved' }[s]; },
+    statusCls(s) { return { new: 'bg-red-100 text-red-700', 'in-progress': 'bg-yellow-100 text-yellow-800', resolved: 'bg-green-100 text-green-800' }[s]; },
+    get quickReplies() {
+      const f = this.fbSel; if (!f) return [];
+      const n = f.name || 'dear guest';
+      return f.rating <= 3
+        ? [`Dear ${n}, we're truly sorry about your experience. I've personally looked into it and briefed the team — your next meal is on us. — Pawan, Phinik Oasis`,
+           `Thank you for flagging this, ${n}. We've fixed the issue and would love the chance to serve you better on your next visit.`]
+        : [`Thank you so much, ${n}! Your words mean a lot to our team. If you have a moment, we'd be grateful if you shared this on Google 🙏`,
+           `So happy you enjoyed your visit, ${n}! We've passed your kind words on to the team.`];
+    },
+    setStatus(f, s) { f.status = s; this.log(`marked feedback from ${f.name || 'Anonymous'} as ${this.statusLabel(s)}`); this.toast('Feedback marked ' + this.statusLabel(s)); },
+    sendReply() {
+      const f = this.fbSel, txt = this.fb.reply.trim(); if (!f || !txt) return;
+      f.replies.push({ by: this.userName, text: txt, at: this.today + ' ' + this.nowHM() });
+      if (f.status === 'new') f.status = 'in-progress';
+      this.fb.reply = '';
+      this.log('replied to ' + (f.name || 'anonymous guest'));
+      this.toast(f.phone && f.optIn ? 'Reply sent to guest on WhatsApp (simulated)' : 'Saved as internal note — guest left no contact', f.phone ? 'success' : 'info');
+    },
+    togglePublic(f) { f.publicOk = !f.publicOk; this.log((f.publicOk ? 'sent Google review invite to ' : 'withdrew review invite for ') + (f.name || 'guest')); this.toast(f.publicOk ? 'Google review invite sent (simulated)' : 'Invite withdrawn', 'info'); },
+    // QR guest flow
+    openTable(t) { this.qr.table = t; this.qr.step = 'form'; this.qr.form = { rating: 0, category: '', message: '', name: '', phone: '', optIn: true }; },
+    submitFeedback() {
+      const f = this.qr.form;
+      if (!f.rating) return this.toast('Please tap a star rating', 'error');
+      const entry = { id: uid('f'), date: this.today, time: this.nowHM(), table: this.qr.table, rating: f.rating, category: f.category || 'Other', message: f.message.trim() || '(No comment — rating only)', name: f.name.trim(), phone: f.phone.replace(/\D/g, ''), optIn: !!(f.optIn && f.phone), status: 'new', replies: [], publicOk: false };
+      this.db.feedback.push(entry);
+      if (entry.phone) {
+        const c = this.db.contacts.find(x => x.phone === entry.phone);
+        if (c) { c.visits++; c.lastVisit = this.today; c.optIn = c.optIn || entry.optIn; }
+        else this.db.contacts.push({ name: entry.name || 'Guest', phone: entry.phone, lastVisit: this.today, visits: 1, optIn: entry.optIn });
+      }
+      this.qr.last = entry; this.qr.step = 'done'; this.fb.sel = entry.id;
+      this.db.activity.unshift({ at: this.today + ' ' + this.nowHM(), who: 'Guest @' + entry.table, text: `left ${entry.rating}★ private feedback` });
+      this.toast(entry.rating <= 3 ? `⚠ New ${entry.rating}★ complaint from ${entry.table} — inbox alerted` : `New ${entry.rating}★ feedback from ${entry.table}`, entry.rating <= 3 ? 'error' : 'success');
+    },
+    qrSvg(label) {
+      if (this._qrCache[label]) return this._qrCache[label];
+      const n = 21, s = 6; let sd = 7; for (const c of label) sd = sd * 31 + c.charCodeAt(0);
+      const r = rng(sd);
+      const inF = (i, j) => (i < 8 && j < 8) || (i > n - 9 && j < 8) || (i < 8 && j > n - 9);
+      let out = `<svg viewBox="0 0 ${n * s} ${n * s}" width="100%" height="100%" xmlns="http://www.w3.org/2000/svg"><rect width="100%" height="100%" fill="#fff"/>`;
+      for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) if (!inF(i, j) && r() < 0.5) out += `<rect x="${i * s}" y="${j * s}" width="${s}" height="${s}" fill="#0b3b38"/>`;
+      const finder = (x, y) => `<rect x="${x * s}" y="${y * s}" width="${7 * s}" height="${7 * s}" fill="#0b3b38"/><rect x="${(x + 1) * s}" y="${(y + 1) * s}" width="${5 * s}" height="${5 * s}" fill="#fff"/><rect x="${(x + 2) * s}" y="${(y + 2) * s}" width="${3 * s}" height="${3 * s}" fill="#0b3b38"/>`;
+      out += finder(0, 0) + finder(n - 7, 0) + finder(0, n - 7) + '</svg>';
+      return (this._qrCache[label] = out);
+    },
+    // WhatsApp
+    daysSince(d) { return Math.round((parseYmd(this.today) - parseYmd(d)) / 864e5); },
+    get waAudience() {
+      let list = this.db.contacts.filter(c => c.optIn);
+      const s = this.wa.segment;
+      if (s === 'regular') list = list.filter(c => c.visits >= 5);
+      if (s === 'lapsed') list = list.filter(c => this.daysSince(c.lastVisit) > 30);
+      if (s === 'new') list = list.filter(c => c.visits <= 1);
+      if (s === 'complaint') { const ph = this.db.feedback.filter(f => f.rating <= 3 && f.phone).map(f => f.phone); list = list.filter(c => ph.includes(c.phone)); }
+      return list;
+    },
+    get waPreviewName() { return this.waAudience[0] ? this.waAudience[0].name.split(' ')[0] : 'Guest'; },
+    /** Builds the broadcast copy. {name} is replaced per-recipient at send time. */
+    waMessage(name) {
+      const w = this.wa, H = w.tone === 'hinglish', E = x => w.emoji ? x + ' ' : '';
+      const nm = name || '{name}';
+      const till = w.validTill ? parseYmd(w.validTill).toLocaleDateString('en-IN', { day: 'numeric', month: 'long' }) : '';
+      const off = +w.discount > 0 ? `${w.discount}% OFF` : '';
+      const tillTxt = till ? (H ? ` Offer ${till} tak valid hai.` : ` Valid till ${till}.`) : '';
+      const book = H ? `${E('📞')}Table book karne ke liye reply karein ya call karein: ${w.cta}` : `${E('📞')}Reply here or call ${w.cta} to reserve your table.`;
+      let m = '';
+      switch (w.type) {
+        case 'festive': m = H
+          ? `${E('🪔')}Namaste ${nm} ji!\n\nIs tyohaar ko khaas banaiye Phinik Oasis ke saath. Pesh hai *${w.headline}*${off ? ` — poore bill par *${off}*` : ''}!${tillTxt}\n\n${book}`
+          : `${E('🪔')}Dear ${nm},\n\nMake this festive season special at Phinik Oasis. Introducing *${w.headline}*${off ? ` — enjoy *${off}* on your total bill` : ''}!${tillTxt}\n\n${book}`; break;
+        case 'weekend': m = H
+          ? `${E('🍛')}Hi ${nm}!\n\nIs weekend kuch bada plan kijiye — *${w.headline}* Phinik Oasis mein${off ? `, sirf aapke liye *${off}*` : ''}. Live tandoor, desserts aur bahut kuch!${tillTxt}\n\n${book}`
+          : `${E('🍛')}Hi ${nm}!\n\nYour weekend plan is sorted: *${w.headline}* at Phinik Oasis${off ? ` with an exclusive *${off}* for you` : ''}. Live tandoor, desserts and more!${tillTxt}\n\n${book}`; break;
+        case 'newmenu': m = H
+          ? `${E('✨')}${nm} ji, kuch naya aaya hai!\n\nChef Ravi ne launch kiye hain *${w.headline}*. Sabse pehle taste kijiye${off ? ` aur paaiye *${off}*` : ''}.${tillTxt}\n\n${book}`
+          : `${E('✨')}${nm}, something new is cooking!\n\nChef Ravi has just launched *${w.headline}*. Be among the first to try them${off ? ` and get *${off}*` : ''}.${tillTxt}\n\n${book}`; break;
+        case 'winback': m = H
+          ? `${E('💛')}${nm} ji, bahut din ho gaye!\n\nPhinik Oasis mein aapki kami mehsoos ho rahi hai. Wapas aaiye aur paaiye *${off || 'ek complimentary dessert'}*.${tillTxt}\n\n${book}`
+          : `${E('💛')}${nm}, it's been a while!\n\nWe've missed you at Phinik Oasis. Come back and enjoy *${off || 'a complimentary dessert'}* on us.${tillTxt}\n\n${book}`; break;
+        case 'recovery': m = H
+          ? `${E('🙏')}${nm} ji, pichhli visit ke liye hum dil se maafi chahte hain.\n\nAapka feedback humne seriously liya hai aur sudhaar kiya hai. Humein ek aur mauka dijiye — agli visit par *${off || 'ek complimentary main course'}*.${tillTxt}\n\n${book}`
+          : `${E('🙏')}Dear ${nm},\n\nWe're truly sorry your last visit fell short. We've acted on your feedback and would love another chance — enjoy *${off || 'a complimentary main course'}* on your next visit.${tillTxt}\n\n${book}`; break;
+        case 'birthday': m = H
+          ? `${E('🎂')}Happy Birthday month, ${nm} ji!\n\nCelebrate kijiye Phinik Oasis mein — *${w.headline}*: ${off ? `*${off}*` : 'complimentary cake'} aapki party ke liye.${tillTxt}\n\n${book}`
+          : `${E('🎂')}Happy birthday month, ${nm}!\n\nCelebrate with us at Phinik Oasis — *${w.headline}*: ${off ? `*${off}*` : 'a complimentary cake'} for your celebration.${tillTxt}\n\n${book}`; break;
+      }
+      const sign = H ? `\n\n— Pawan & Team, Phinik Oasis` : `\n\nWarm regards,\nPawan & Team, Phinik Oasis`;
+      return m + sign + (H ? `\n\n_Messages band karne ke liye STOP reply karein._` : `\n\n_Reply STOP to opt out._`);
+    },
+    waHtml(t) {
+      return t.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/\*(.+?)\*/g, '<b>$1</b>').replace(/_(.+?)_/g, '<i class="text-gray-500">$1</i>');
+    },
+    scheduleCampaign() {
+      this.db.campaigns.unshift({ id: uid('c'), at: this.today + ' ' + this.nowHM(), headline: this.wa.headline, type: this.wa.type, count: this.waAudience.length, status: 'Queued (simulated)', by: this.userName });
+      this.log(`queued WhatsApp campaign "${this.wa.headline}" to ${this.waAudience.length} guests`);
+      this.toast(`Campaign queued for ${this.waAudience.length} opted-in guests`);
+    },
+
+    /* ================= 3f. DASHBOARD & HELPERS ================= */
+    get today() { return ymd(this.now); },
+    get dateLabel() { return this.now.toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }); },
+    get greet() { const h = this.now.getHours(); return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening'; },
+    get spend7() { const from = ymd(addDays(this.now, -6)); return this.db.purchases.filter(p => p.date >= from && p.date <= this.today).reduce((t, p) => t + p.price, 0); },
+    get monthSpend() { const m = this.today.slice(0, 7); return this.db.purchases.filter(p => p.date.startsWith(m)).reduce((t, p) => t + p.price, 0); },
+    get att7() { const from = ymd(addDays(this.now, -6)); return this.db.attendance.filter(a => a.date >= from && a.date <= this.today); },
+    get hours7() { return this.att7.reduce((t, a) => t + this.liveHrs(a), 0); },
+    get labour7() { return this.att7.reduce((t, a) => { const s = this.db.staff.find(x => x.id === a.staffId); return t + (s ? this.liveHrs(a) * this.hourly(s) : 0); }, 0); },
+    get kpis() {
+      if (this.isAdmin) return [
+        { label: 'Purchases · 7 days', value: this.inr(this.spend7), sub: 'Month-to-date ' + this.inr(this.monthSpend) },
+        { label: 'Labour cost · 7 days', value: this.inr(this.labour7), sub: this.hours7.toFixed(0) + ' staff-hours logged' },
+        { label: 'Waste · 7 days', value: this.inr(this.waste7), sub: (this.spend7 ? (this.waste7 / this.spend7 * 100).toFixed(1) : 0) + '% of purchases', cls: 'text-red-600' },
+        { label: 'Guest rating · 30d', value: this.avgRating30.toFixed(1) + ' ★', sub: this.fb30.length + ' private reviews', cls: 'text-yellow-600' },
+        { label: 'Open feedback', value: this.openFb, sub: this.fbCount('new') + ' new & unanswered', cls: this.openFb ? 'text-red-600' : '' },
+      ];
+      return [
+        { label: 'Rostered today', value: this.scheduledToday.length, sub: 'staff on the rota' },
+        { label: 'On duty now', value: this.onDutyNow, sub: 'checked in', cls: 'text-green-600' },
+        { label: 'Waste entries · 7d', value: this.waste7List.length, sub: 'logged by the team' },
+        { label: 'Price alerts', value: this.inflationAlerts.length, sub: 'items up >5% WoW', cls: this.inflationAlerts.length ? 'text-red-600' : '' },
+        { label: 'Open feedback', value: this.openFb, sub: this.fbCount('new') + ' new', cls: this.openFb ? 'text-red-600' : '' },
+      ];
+    },
+    staffName(id) { if (id === 'admin') return 'Pawan'; const s = this.db.staff.find(x => x.id === id); return s ? s.name : '—'; },
+    roleCls(r) { return { Manager: 'bg-purple-100 text-purple-800', Waiter: 'bg-blue-100 text-blue-800', Chef: 'bg-red-100 text-red-800', Cleaner: 'bg-green-100 text-green-800' }[r] || 'bg-gray-100'; },
+    initials(n) { return (n || '?').split(' ').map(x => x[0]).slice(0, 2).join('').toUpperCase(); },
+    stars(n) { return '★'.repeat(n) + '☆'.repeat(5 - n); },
+    ymd, weekStart,
+    dow(s) { return parseYmd(s).toLocaleDateString('en-IN', { weekday: 'short' }); },
+    dnum(s) { return parseYmd(s).getDate(); },
+    fmtDate(s) { return parseYmd(s).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }); },
+    fmtDateY(s) { return parseYmd(s).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }); },
+    inr(n) { return '₹' + Math.round(n || 0).toLocaleString('en-IN'); },
+    inr2(n) { return '₹' + (n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); },
+    inrK(n) { return n >= 100000 ? '₹' + (n / 100000).toFixed(2) + 'L' : n >= 1000 ? '₹' + (n / 1000).toFixed(1) + 'k' : this.inr(n); },
+    log(text) { this.db.activity.unshift({ at: this.today + ' ' + this.nowHM(), who: this.userName, text }); if (this.db.activity.length > 60) this.db.activity.length = 60; },
+    toast(msg, type = 'success') { const id = uid('t'); this.toasts.push({ id, msg, type }); setTimeout(() => { this.toasts = this.toasts.filter(t => t.id !== id); }, 3200); },
+    async copyText(t) {
+      try { await navigator.clipboard.writeText(t); this.toast('Copied to clipboard'); }
+      catch (e) {
+        const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select();
+        try { document.execCommand('copy'); this.toast('Copied to clipboard'); } catch (_) { this.toast('Copy blocked — select the text manually', 'error'); }
+        ta.remove();
+      }
+    },
+    /** Minimal inline icon set (Heroicons outline paths) */
+    ico(name) {
+      const P = {
+        home: 'M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6',
+        users: 'M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z',
+        calendar: 'M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z',
+        clock: 'M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z',
+        cash: 'M17 9V7a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2m2 4h10a2 2 0 002-2v-6a2 2 0 00-2-2H9a2 2 0 00-2 2v6a2 2 0 002 2zm7-5a2 2 0 11-4 0 2 2 0 014 0z',
+        store: 'M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-4 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4',
+        clipboard: 'M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2',
+        trending: 'M13 7h8m0 0v8m0-8l-8 8-4-4-6 6',
+        book: 'M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253',
+        trash: 'M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16',
+        chat: 'M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z',
+        speaker: 'M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z',
+        qr: 'M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z',
+      };
+      return `<svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="${P[name] || ''}"/></svg>`;
+    },
+  };
+}
+</script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.13.3/cdn.min.js"></script>
+</body>
+</html>
